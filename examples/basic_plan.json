@@ -1,0 +1,12 @@
+{
+  "goal": "Wake the device, open Android settings, wait, and return home.",
+  "target_package": "com.android.settings",
+  "actions": [
+    { "type": "wake" },
+    { "type": "unlock" },
+    { "type": "open_app", "package": "com.android.settings" },
+    { "type": "wait", "seconds": 2 },
+    { "type": "key", "key": "HOME" }
+  ]
+}
+
