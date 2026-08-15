@@ -1,8 +1,0 @@
-build/classes/
-build/dex/
-build/compiled/
-build/gen/
-build/app-aligned.apk
-build/app-unsigned.apk
-build/*.idsig
-*.png
