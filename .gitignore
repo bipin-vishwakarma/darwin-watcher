@@ -12,4 +12,8 @@ artifacts/
 .idea/
 .vscode/
 *.log
-
+screen_*.png
+darwin-watcher/build/classes/
+darwin-watcher/build/dex/
+darwin-watcher/build/compiled/
+darwin-watcher/build/gen/

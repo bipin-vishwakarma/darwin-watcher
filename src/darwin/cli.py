@@ -87,11 +87,15 @@ def execute_plan(
 
 @app.command()
 def doctor(
+    serial: Annotated[str | None, typer.Option(help="Target device serial.")] = None,
     adb_path: Annotated[str | None, typer.Option(help="Path or name of adb.")] = None,
 ) -> None:
     """Check local ADB availability and connected devices."""
     settings = Settings()
-    client = AdbClient(executable=adb_path or settings.adb_path)
+    client = AdbClient(
+        executable=adb_path or settings.adb_path,
+        serial=serial or settings.device_serial,
+    )
     if not client.is_available():
         console.print(
             Panel("ADB was not found. Install Android Platform Tools and add adb to PATH.")
@@ -101,8 +105,8 @@ def doctor(
     console.print("[green]ADB is available.[/green]")
     if not devices:
         console.print("No devices detected. Connect an authorized device or start an emulator.")
-    for serial, state in devices:
-        console.print(f"- {serial}: {state}")
+    for serial_name, state in devices:
+        console.print(f"- {serial_name}: {state}")
 
 
 @app.command("demo")

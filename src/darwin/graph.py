@@ -36,6 +36,8 @@ def build_graph(client: AdbClient, max_actions: int = 12):
             matching = [status for serial, status in devices if serial == client.serial]
             if not matching:
                 return {"error": f"Device not found: {client.serial}"}
+            if matching[0] != "device":
+                return {"error": f"Device is not ready: {client.serial} is {matching[0]}"}
             return {"device_state": matching[0]}
         ready = [serial for serial, status in devices if status == "device"]
         if len(ready) != 1:
@@ -74,6 +76,9 @@ def build_graph(client: AdbClient, max_actions: int = 12):
     def after_inspect(state: DarwinState) -> str:
         return "stop" if state.get("error") else "continue"
 
+    def after_execute(state: DarwinState) -> str:
+        return "stop" if state.get("error") else "continue"
+
     workflow = StateGraph(DarwinState)
     workflow.add_node("validate", validate)
     workflow.add_node("inspect_device", inspect_device)
@@ -86,7 +91,7 @@ def build_graph(client: AdbClient, max_actions: int = 12):
     workflow.add_conditional_edges(
         "inspect_device", after_inspect, {"continue": "execute", "stop": END}
     )
-    workflow.add_edge("execute", "verify")
+    workflow.add_conditional_edges("execute", after_execute, {"continue": "verify", "stop": END})
     workflow.add_edge("verify", END)
     return workflow.compile()
 

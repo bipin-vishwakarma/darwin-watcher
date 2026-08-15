@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Darwin Watcher</string>
+    <string name="accessibility_description">Runs your configured selected-app navigation taps. Do not use for attendance, credentials, OTPs, or approvals.</string>
+</resources>

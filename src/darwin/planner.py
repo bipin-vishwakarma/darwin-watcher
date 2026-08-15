@@ -47,8 +47,9 @@ def smart_plan(goal: str, package: str | None, model: str) -> AutomationPlan:
     plan = llm.invoke([("system", system), ("human", request)])
     if not isinstance(plan, AutomationPlan):
         plan = AutomationPlan.model_validate(plan)
-    if package and any(
-        isinstance(action, OpenAppAction) and action.package != package for action in plan.actions
-    ):
-        raise RuntimeError("Planner attempted to open a package outside the requested target.")
+    if package:
+        if plan.target_package not in (None, package):
+            raise RuntimeError("Planner returned a target package outside the requested target.")
+        if any(isinstance(action, OpenAppAction) and action.package != package for action in plan.actions):
+            raise RuntimeError("Planner attempted to open a package outside the requested target.")
     return plan

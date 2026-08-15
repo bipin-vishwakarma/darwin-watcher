@@ -29,13 +29,14 @@ dev = [
 ]
 
 [project.scripts]
-darwin = "darwin.cli:app"
+darwin = "darwin.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/darwin"]
 
 [tool.pytest.ini_options]
 addopts = "-q"
+pythonpath = ["src"]
 testpaths = ["tests"]
 
 [tool.ruff]

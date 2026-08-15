@@ -1,125 +1,147 @@
-# Darwin
+# Darwin & Darwin Watcher 🤖📱
 
-Darwin is a safe-by-default Android automation agent. It uses **LangGraph 1.2**
-to validate a goal, check an Android device, build or load an action plan,
-execute it through ADB, and verify the final foreground app.
+> **Autonomous Android Navigation, Screen Automation & Two-Way Telegram Remote Control Engine**
 
-The first milestone can:
+Darwin is a complete, production-grade Android automation suite comprising:
+1. **`darwin`**: A safe-by-default Python agent powered by **LangGraph 1.2** for goal validation, device inspection, LLM vision planning, and ADB execution.
+2. **`darwin-watcher`**: A high-performance native Android application running directly on-device with Accessibility gestures, automatic screen wake & swipe unlocking, scheduled task execution with time tolerance, and a **Two-Way Telegram Remote Bot** (no external VPS required).
 
-- wake and swipe-unlock a device that has no secure lock, or one already made
-  accessible by Android's supported trust mechanisms;
-- open an app by Android package name;
-- perform a small allow-listed set of actions: tap, swipe, text input, key
-  presses, and waits;
-- run deterministic JSON plans or optionally use an LLM to turn a plain-English
-  goal into the same constrained schema;
-- default to a dry run and require explicit confirmation before real actions.
+---
 
-Darwin deliberately does **not** bypass a PIN, password, pattern, biometric
-lock, factory-reset protection, or app security. Use it only on devices and
-apps you own or are authorized to test.
+## 🌟 Key Highlights & Features
 
-## Architecture
+### 📲 On-Device Engine (`darwin-watcher`)
+- **Zero VPS / Server Needed**: Runs fully autonomous on Android with a low-power background Telegram bot poller.
+- **Lock Screen Auto-Unlock**: Wakes the display and automatically dispatches a calibrated upward swipe gesture to unlock without touching the phone.
+- **Strict Keyguard Protection**: Keyguard status checks guarantee zero phantom taps on lock screens.
+- **Clean App Cold Starts**: Always restarts target apps from scratch (`FLAG_ACTIVITY_CLEAR_TASK`) before executing actions.
+- **4-Second Warmup Buffer**: Displays a live Dynamic Island countdown (`App ready · Resting (4s)...`) to allow splash screens and networks to settle.
+- **Auto-Sleep Upon Completion**: Captures a clean screenshot, delivers it to Telegram, closes the app, and automatically locks the device and sleeps the display.
+- **Flexible Scheduling Tab**:
+  - 7-day interactive day-of-week selector (`Mon` to `Sun`) with quick presets (*Weekdays*, *Every Day*, *Weekends*).
+  - 12-Hour AM/PM format support.
+  - Natural time tolerance stepper (Exact, $\pm 2\text{m}$, $\pm 5\text{m}$, $\pm 10\text{m}$, $\pm 15\text{m}$, $\pm 30\text{m}$) for human-like scheduling.
+  - Per-schedule app and profile bindings that persist across reboots.
+- **Xiaomi / MIUI 24/7 Keep-Alive Shield**:
+  - Full accessibility configuration (`canRetrieveWindowContent="true"`, `FLAG_RETRIEVE_INTERACTIVE_WINDOWS`).
+  - 1-tap in-app shortcuts to configure MIUI Auto-Start and Battery Saver (*No restrictions*).
+- **Dynamic Island Watermark**: Non-intrusive notch HUD showing real-time step progress with zero tapjacking interference.
 
-```text
-goal / JSON plan
-      |
-      v
-validate -> inspect device -> plan -> approve -> execute -> verify
-                 |                         |
-                 +------ ADB adapter ------+
-```
+### 🐍 Python LangGraph Agent (`darwin`)
+- Safe-by-default execution pipeline (`validate -> inspect -> plan -> approve -> execute -> verify`).
+- Support for deterministic JSON plans or plain-English goals via LLM.
+- Enforced security policies rejecting dangerous package launches, shell injections, and sensitive data leakage.
 
-LangGraph owns orchestration and state. The ADB adapter owns device I/O. The
-policy layer rejects dangerous packages, shell escape hatches, secret-looking
-text, unsupported actions, and overlong plans.
+---
 
-## Requirements
+## 🤖 Telegram Remote Control Center
 
-- Python 3.11+
-- Android Platform Tools (`adb` on `PATH`)
-- an Android device or emulator with USB debugging enabled
-- authorization for the device and target app
+Send commands directly to your private Telegram bot from anywhere in the world:
 
-For physical devices, enable Developer options and USB debugging, connect the
-device, and accept its RSA debugging prompt. Keep real credentials out of plans
-and environment files.
+| Command | Action |
+| :--- | :--- |
+| **`/run`** | Wakes device, auto-unlocks screen, opens target app fresh, warms up for 4s, executes taps, takes screenshot, delivers photo, and locks phone back to sleep |
+| **`/sleep`** or **`/lock`** | Remotely locks the phone and puts screen to sleep immediately |
+| **`/status`** | Real-time battery percentage, charging state, target app, active profile, and system engine health |
+| **`/schedules`** | Lists all configured automated schedules with active days and tolerance windows |
+| **`/screenshot`** | Captures a live screen photo and sends it to Telegram |
+| **`/ping`** | Checks bot connectivity and returns device model (*e.g., Xiaomi Mi 11X*) |
 
-## Setup
+---
+
+## 🚀 Quickstart Guide
+
+### 1. Building & Installing `darwin-watcher` (Android APK)
+
+Prerequisites:
+- Android SDK installed (`build-tools`, `platforms;android-33`)
+- PowerShell
 
 ```powershell
+# Navigate to the Android watcher directory
+cd darwin-watcher
+
+# Build the debug APK
+powershell -ExecutionPolicy Bypass -File .\build.ps1
+
+# Install onto your connected Android device via ADB
+adb install -r .\build\darwin-watcher-debug.apk
+```
+
+### 2. Setting Up Telegram Remote Bridge
+1. Message `@BotFather` on Telegram to create your bot and obtain your `BOT_TOKEN`.
+2. Get your `CHAT_ID` (e.g. from `@userinfobot`).
+3. Open **Darwin Watcher** on your phone $\to$ Navigate to the **Settings** tab:
+   - Check **"Send screenshot & status on completion"**
+   - Check **"Enable Two-Way Remote Bot Listener"**
+   - Enter your `Bot Token` and `Chat ID`
+   - Tap **Save Bridge**
+4. Send `/ping` or `/run` in your Telegram chat to test!
+
+---
+
+### 3. Setting Up the Python CLI (`darwin`)
+
+```powershell
+# Create virtual environment
 py -3.13 -m venv .venv
 .venv\Scripts\Activate.ps1
+
+# Install dependencies
 python -m pip install -e ".[dev]"
+
+# Verify ADB connection
 adb devices
-```
 
-Preview the built-in demo safely:
-
-```powershell
+# Run preview demo
 darwin demo --package com.android.settings
-```
 
-Execute it after inspecting the preview:
-
-```powershell
-darwin demo --package com.android.settings --execute
-```
-
-The demo wakes the device, requests a swipe unlock, opens the target package,
-waits, and presses Home. `--execute` still asks for confirmation unless `--yes`
-is supplied.
-
-## Run a deterministic plan
-
-Copy `examples/basic_plan.json`, update the package and coordinates for your
-test device, then run:
-
-```powershell
-darwin run examples/basic_plan.json
+# Run deterministic action plan
 darwin run examples/basic_plan.json --execute
 ```
 
-Coordinates differ by resolution and orientation. Prefer emulator snapshots or
-a dedicated test device with stable display settings.
+---
 
-## Optional smart planning
+## 📂 Repository Structure
 
-Install the AI extra and configure an OpenAI API key:
-
-```powershell
-python -m pip install -e ".[ai,dev]"
-$env:OPENAI_API_KEY = "your-key"
-darwin smart "Open Android settings, wait two seconds, then go home" --package com.android.settings
-darwin smart "Open Android settings, wait two seconds, then go home" --package com.android.settings --execute
+```text
+.
+├── darwin-watcher/                  # Native Android Automation Engine
+│   ├── app/src/main/
+│   │   ├── java/com/darwin/watcher/
+│   │   │   ├── MainActivity.java                # Multi-tab Dashboard, Schedules & Settings UI
+│   │   │   ├── WatcherAccessibilityService.java # Accessibility touch engine, lock/unlock & screenshot
+│   │   │   ├── Runner.java                      # Action execution loop, warmup countdown & auto-sleep
+│   │   │   ├── TelegramRemoteService.java       # Two-way foreground bot poller & command dispatcher
+│   │   │   ├── TelegramNotifier.java            # Telegram Bot HTTP client (photo/text)
+│   │   │   ├── WakeUnlockActivity.java          # Keyguard dismissal & screen turn-on activity
+│   │   │   ├── AlarmReceiver.java               # Exact alarm scheduler with reboot resilience
+│   │   │   ├── Prefs.java                       # Persistent schedules, profiles & configuration
+│   │   │   └── DeviceUtils.java                 # Hardware model & system inspector
+│   │   └── AndroidManifest.xml                  # App permissions & system services
+│   ├── build.ps1                                # Native build & packaging pipeline
+│   └── build/darwin-watcher-debug.apk           # Compiled ready-to-use APK
+├── src/darwin/                      # Python LangGraph Automation Agent
+│   ├── __main__.py                  # CLI entry point
+│   ├── cli.py                       # Argument parsing & execution flows
+│   ├── graph.py                     # LangGraph state machine & orchestration
+│   ├── planner.py                   # Deterministic & smart LLM plan generator
+│   └── adb.py                       # ADB adapter & device controller
+├── tests/                           # Python unit and integration test suite
+├── examples/                        # Sample automation plan JSONs
+├── LICENSE                          # MIT License
+└── README.md                        # Documentation & setup guide
 ```
 
-The model can only return Darwin's typed, allow-listed actions; local policy
-validation still runs before execution. Review generated plans carefully.
+---
 
-## Useful commands
+## 🛡️ Privacy & Security Notice
 
-```powershell
-darwin doctor
-darwin graph
-darwin --help
-```
+Darwin and Darwin Watcher are designed for personal productivity and automated testing on devices and accounts you own. The engine does **not** bypass biometric authentication or PINs on encrypted screens without authorization. Keep your bot tokens private and out of public repositories.
 
-Use `--serial` when more than one device is connected. You can also set
-`DARWIN_DEVICE_SERIAL`.
+---
 
-## Development
+## 👨‍💻 Author
 
-```powershell
-ruff check .
-pytest
-```
-
-## Roadmap
-
-- UI hierarchy inspection and semantic element targeting
-- screenshot-based verification
-- reusable workflows and checkpoints
-- Appium driver for cross-platform test suites
-- human approval UI and execution audit reports
-
+**Bipin Vishwakarma**
+- GitHub: [@bipin-vishwakarma](https://github.com/bipin-vishwakarma)

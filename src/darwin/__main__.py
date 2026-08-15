@@ -1,3 +1,3 @@
-from darwin.cli import app
+from darwin.cli import main
 
-app()
+main()
