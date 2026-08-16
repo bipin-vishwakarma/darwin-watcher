@@ -25,11 +25,13 @@ public final class Runner {
     private Runner() { }
 
     public static void run(Context context) {
-        Context app = context.getApplicationContext();
+        final Context app = context.getApplicationContext();
+        DeviceUtils.installGlobalCrashShield();
+        DeviceUtils.ensureAccessibilityEnabled(app);
+
         WatcherAccessibilityService service = WatcherAccessibilityService.current();
         if (service == null) {
-            status(app, "Enable Darwin Watcher Accessibility first");
-            notify(app, "Darwin Watcher", "Accessibility is not enabled");
+            new Handler(Looper.getMainLooper()).postDelayed(new DelayedRetryRunner(app), 800);
             return;
         }
 
@@ -570,6 +572,25 @@ public final class Runner {
             this.x2 = x2;
             this.y2 = y2;
             this.duration = duration;
+        }
+    }
+
+    private static final class DelayedRetryRunner implements Runnable {
+        private final Context context;
+
+        DelayedRetryRunner(Context context) {
+            this.context = context;
+        }
+
+        @Override
+        public void run() {
+            WatcherAccessibilityService s = WatcherAccessibilityService.current();
+            if (s != null) {
+                Runner.run(context);
+            } else {
+                status(context, "Enable Darwin Watcher Accessibility first");
+                Runner.notify(context, "Darwin Watcher", "Accessibility is not enabled");
+            }
         }
     }
 }

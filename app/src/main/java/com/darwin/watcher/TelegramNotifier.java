@@ -57,14 +57,18 @@ public final class TelegramNotifier {
             Log.d(TAG, "Telegram disabled in preferences.");
             return;
         }
-        sendText(context, "✅ Darwin Watcher: Automation task finished successfully on " + Prefs.targetLabel(context) + "!", null);
+        sendText(context, "✅ Darwin Watcher: Automation task finished successfully on *" + Prefs.targetLabel(context) + "*!", null);
     }
 
     public static void sendTest(Context context, Callback callback) {
-        sendText(context, "🚀 Darwin Watcher: Test notification from your device!", callback);
+        sendText(context, "🚀 *Darwin Watcher*: Test notification from your device!", callback);
     }
 
     public static void sendText(Context context, String text, Callback callback) {
+        sendText(context, text, null, callback);
+    }
+
+    public static void sendText(Context context, String text, String replyMarkupJson, Callback callback) {
         String token = Prefs.telegramToken(context).trim();
         String chat = Prefs.telegramChat(context).trim();
 
@@ -76,7 +80,13 @@ public final class TelegramNotifier {
             return;
         }
 
-        new Thread(new Sender(context.getApplicationContext(), token, chat, text, callback)).start();
+        new Thread(new Sender(context.getApplicationContext(), token, chat, text, replyMarkupJson, callback)).start();
+    }
+
+    public static void answerCallbackQuery(Context context, String callbackQueryId, String text) {
+        String token = Prefs.telegramToken(context).trim();
+        if (token.length() == 0 || callbackQueryId == null || callbackQueryId.length() == 0) return;
+        new Thread(new CallbackAnswerer(token, callbackQueryId, text)).start();
     }
 
     public static void sendPhoto(Context context, byte[] photoBytes, String caption, Callback callback) {
@@ -114,18 +124,62 @@ public final class TelegramNotifier {
         }
     }
 
+    private static final class CallbackAnswerer implements Runnable {
+        private final String token;
+        private final String queryId;
+        private final String text;
+
+        CallbackAnswerer(String token, String queryId, String text) {
+            this.token = token;
+            this.queryId = queryId;
+            this.text = text;
+        }
+
+        @Override
+        public void run() {
+            String cleanToken = token.startsWith("bot") ? token.substring(3) : token;
+            HttpURLConnection conn = null;
+            try {
+                StringBuilder body = new StringBuilder();
+                body.append("callback_query_id=").append(enc(queryId));
+                if (text != null && text.length() > 0) {
+                    body.append("&text=").append(enc(text));
+                }
+                URL url = new URL("https://api.telegram.org/bot" + cleanToken + "/answerCallbackQuery");
+                conn = (HttpURLConnection) url.openConnection();
+                conn.setRequestMethod("POST");
+                conn.setDoOutput(true);
+                conn.setConnectTimeout(8000);
+                conn.setReadTimeout(8000);
+                conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded");
+
+                OutputStream out = conn.getOutputStream();
+                out.write(body.toString().getBytes("UTF-8"));
+                out.flush();
+                out.close();
+
+                conn.getResponseCode();
+            } catch (Exception ignored) {
+            } finally {
+                if (conn != null) conn.disconnect();
+            }
+        }
+    }
+
     private static final class Sender implements Runnable {
         private final Context context;
         private final String token;
         private final String chat;
         private final String text;
+        private final String replyMarkup;
         private final Callback callback;
 
-        Sender(Context context, String token, String chat, String text, Callback callback) {
+        Sender(Context context, String token, String chat, String text, String replyMarkup, Callback callback) {
             this.context = context;
             this.token = token;
             this.chat = chat;
             this.text = text;
+            this.replyMarkup = replyMarkup;
             this.callback = callback;
         }
 
@@ -138,10 +192,15 @@ public final class TelegramNotifier {
             for (int attempt = 1; attempt <= maxAttempts; attempt++) {
                 HttpURLConnection connection = null;
                 try {
-                    String body = "chat_id=" + enc(cleanChat) + "&text=" + enc(text);
-                    URL url = new URL("https://api.telegram.org/bot" + cleanToken + "/sendMessage");
-                    Log.d(TAG, "Attempt " + attempt + ": Connecting to Telegram API for chat_id=" + cleanChat);
+                    StringBuilder body = new StringBuilder();
+                    body.append("chat_id=").append(enc(cleanChat));
+                    body.append("&text=").append(enc(text));
+                    body.append("&parse_mode=Markdown");
+                    if (replyMarkup != null && replyMarkup.length() > 0) {
+                        body.append("&reply_markup=").append(enc(replyMarkup));
+                    }
 
+                    URL url = new URL("https://api.telegram.org/bot" + cleanToken + "/sendMessage");
                     connection = (HttpURLConnection) url.openConnection();
                     connection.setRequestMethod("POST");
                     connection.setDoOutput(true);
@@ -150,7 +209,7 @@ public final class TelegramNotifier {
                     connection.setRequestProperty("Content-Type", "application/x-www-form-urlencoded");
 
                     OutputStream out = connection.getOutputStream();
-                    out.write(body.getBytes("UTF-8"));
+                    out.write(body.toString().getBytes("UTF-8"));
                     out.flush();
                     out.close();
 
@@ -159,7 +218,6 @@ public final class TelegramNotifier {
 
                     if (code >= 200 && code < 300) {
                         final String successMsg = "Telegram message sent successfully!";
-                        Log.i(TAG, successMsg);
                         Prefs.setLastStatus(context, successMsg);
                         notifyMain(true, successMsg);
                         return;
@@ -174,7 +232,7 @@ public final class TelegramNotifier {
                 } catch (Exception exc) {
                     Log.w(TAG, "Attempt " + attempt + " failed: " + exc.getMessage());
                     if (attempt < maxAttempts) {
-                        try { Thread.sleep(2500); } catch (InterruptedException ignored) { }
+                        try { Thread.sleep(2000); } catch (InterruptedException ignored) { }
                     } else {
                         final String failMsg = "Telegram error: " + exc.getClass().getSimpleName() + " (" + exc.getMessage() + ")";
                         Log.e(TAG, failMsg, exc);
@@ -225,8 +283,6 @@ public final class TelegramNotifier {
                     String twoHyphens = "--";
 
                     URL url = new URL("https://api.telegram.org/bot" + cleanToken + "/sendPhoto");
-                    Log.d(TAG, "Attempt " + attempt + ": Uploading screenshot to Telegram chat_id=" + cleanChat);
-
                     connection = (HttpURLConnection) url.openConnection();
                     connection.setDoInput(true);
                     connection.setDoOutput(true);
@@ -268,7 +324,6 @@ public final class TelegramNotifier {
 
                     if (code >= 200 && code < 300) {
                         final String successMsg = "Telegram screenshot sent!";
-                        Log.i(TAG, successMsg);
                         Prefs.setLastStatus(context, successMsg);
                         notifyMain(true, successMsg);
                         return;
@@ -283,7 +338,7 @@ public final class TelegramNotifier {
                 } catch (Exception exc) {
                     Log.w(TAG, "Attempt " + attempt + " failed: " + exc.getMessage());
                     if (attempt < maxAttempts) {
-                        try { Thread.sleep(2500); } catch (InterruptedException ignored) { }
+                        try { Thread.sleep(2000); } catch (InterruptedException ignored) { }
                     } else {
                         final String failMsg = "Telegram photo error: " + exc.getClass().getSimpleName() + " (" + exc.getMessage() + ")";
                         Log.e(TAG, failMsg, exc);

@@ -81,6 +81,9 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        DeviceUtils.installGlobalCrashShield();
+        DeviceUtils.ensureAccessibilityEnabled(this);
+        AlarmReceiver.scheduleWatchdogHeartbeat(this);
         ensureTelegramRemoteService();
         boolean isRunNow = getIntent() != null && getIntent().getBooleanExtra(EXTRA_RUN_NOW, false);
         handleRunIntent(getIntent());
@@ -156,6 +159,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     @Override
     protected void onResume() {
         super.onResume();
+        DeviceUtils.ensureAccessibilityEnabled(this);
+        AlarmReceiver.scheduleWatchdogHeartbeat(this);
         ensureTelegramRemoteService();
         if (splash == null) {
             renderTab();

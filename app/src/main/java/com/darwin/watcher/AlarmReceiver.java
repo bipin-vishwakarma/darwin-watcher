@@ -1,19 +1,33 @@
 package com.darwin.watcher;
 
+import android.app.AlarmManager;
+import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.os.Build;
 import android.os.PowerManager;
 
 public class AlarmReceiver extends BroadcastReceiver {
+    public static final String ACTION_HEARTBEAT = "com.darwin.watcher.HEARTBEAT";
+
     @Override
     public void onReceive(Context context, Intent intent) {
         Context app = context.getApplicationContext();
+        DeviceUtils.installGlobalCrashShield();
+
+        // 1. Immediately self-heal and lock Accessibility Service in Android Secure Settings
+        DeviceUtils.ensureAccessibilityEnabled(app);
+
+        // 2. Ensure Telegram Remote Listener is online
+        if (Prefs.telegramRemoteEnabled(app) && Prefs.hasTelegramCredentials(app)) {
+            TelegramRemoteService.start(app);
+        }
+
+        // 3. Schedule next 15-minute Watchdog Heartbeat pulse to keep app unkillable
+        scheduleWatchdogHeartbeat(app);
 
         if (intent != null && Intent.ACTION_BOOT_COMPLETED.equals(intent.getAction())) {
-            if (Prefs.telegramRemoteEnabled(app) && Prefs.hasTelegramCredentials(app)) {
-                TelegramRemoteService.start(app);
-            }
             // Reschedule all active schedules on boot
             java.util.ArrayList<Prefs.ScheduleItem> schedules = Prefs.getSchedules(app);
             for (int i = 0; i < schedules.size(); i++) {
@@ -22,6 +36,11 @@ public class AlarmReceiver extends BroadcastReceiver {
                     Runner.scheduleItem(app, item);
                 }
             }
+            return;
+        }
+
+        if (intent != null && ACTION_HEARTBEAT.equals(intent.getAction())) {
+            // Watchdog heartbeat pulse processed - accessibility & service verified
             return;
         }
 
@@ -65,5 +84,24 @@ public class AlarmReceiver extends BroadcastReceiver {
             // Execute full automation pipeline (wake screen, dismiss keyguard / swipe-to-unlock, warmup, and run)
             Runner.run(app);
         }
+    }
+
+    public static void scheduleWatchdogHeartbeat(Context context) {
+        try {
+            AlarmManager alarms = (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
+            if (alarms == null) return;
+            Intent intent = new Intent(context, AlarmReceiver.class);
+            intent.setAction(ACTION_HEARTBEAT);
+            PendingIntent pending = PendingIntent.getBroadcast(
+                context, 8888, intent,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+            );
+            long triggerAt = System.currentTimeMillis() + (15 * 60 * 1000L); // 15 minutes pulse
+            if (Build.VERSION.SDK_INT >= 23) {
+                alarms.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, pending);
+            } else {
+                alarms.setExact(AlarmManager.RTC_WAKEUP, triggerAt, pending);
+            }
+        } catch (Exception ignored) { }
     }
 }

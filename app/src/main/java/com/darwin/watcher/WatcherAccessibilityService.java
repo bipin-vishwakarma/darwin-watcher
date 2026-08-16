@@ -106,8 +106,6 @@ public class WatcherAccessibilityService extends AccessibilityService implements
         if (event != null && event.getPackageName() != null) {
             CharSequence packageName = event.getPackageName();
             if (getPackageName().contentEquals(packageName)) {
-                if (panel != null || minimized != null || capture != null) return;
-                foregroundPackage = packageName;
                 return;
             }
             foregroundPackage = packageName;
@@ -116,8 +114,6 @@ public class WatcherAccessibilityService extends AccessibilityService implements
                     pendingOverlay = false;
                     showOverlay();
                 }
-            } else if (capture != null) {
-                hideCapture();
             }
         }
     }
@@ -201,6 +197,38 @@ public class WatcherAccessibilityService extends AccessibilityService implements
         return false;
     }
 
+    public boolean triggerHome() {
+        return performGlobalAction(GLOBAL_ACTION_HOME);
+    }
+
+    public boolean triggerBack() {
+        return performGlobalAction(GLOBAL_ACTION_BACK);
+    }
+
+    public boolean triggerRecents() {
+        return performGlobalAction(GLOBAL_ACTION_RECENTS);
+    }
+
+    public boolean triggerNotifications() {
+        return performGlobalAction(GLOBAL_ACTION_NOTIFICATIONS);
+    }
+
+    public boolean enterText(String text) {
+        if (text == null) return false;
+        try {
+            android.view.accessibility.AccessibilityNodeInfo root = getRootInActiveWindow();
+            if (root != null) {
+                android.view.accessibility.AccessibilityNodeInfo focused = root.findFocus(android.view.accessibility.AccessibilityNodeInfo.FOCUS_INPUT);
+                if (focused != null) {
+                    android.os.Bundle args = new android.os.Bundle();
+                    args.putCharSequence(android.view.accessibility.AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text);
+                    return focused.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_SET_TEXT, args);
+                }
+            }
+        } catch (Exception ignored) { }
+        return false;
+    }
+
     public boolean isTargetActive(String packageName) {
         if (packageName == null) return false;
         if (isDeviceLocked()) {
@@ -210,7 +238,7 @@ public class WatcherAccessibilityService extends AccessibilityService implements
             android.view.accessibility.AccessibilityNodeInfo root = getRootInActiveWindow();
             if (root != null) {
                 CharSequence rootPkg = root.getPackageName();
-                if (rootPkg != null) {
+                if (rootPkg != null && !getPackageName().contentEquals(rootPkg)) {
                     foregroundPackage = rootPkg;
                     return packageName.equals(rootPkg.toString());
                 }
@@ -371,7 +399,6 @@ public class WatcherAccessibilityService extends AccessibilityService implements
         box.addView(timelineCard);
 
         panelParams = params(dp(270), WindowManager.LayoutParams.WRAP_CONTENT);
-        panelParams.flags = 0;
         panelParams.gravity = Gravity.TOP | Gravity.END;
         panelParams.x = panelSavedX >= 0 ? panelSavedX : dp(8);
         panelParams.y = panelSavedY >= 0 ? panelSavedY : dp(80);
@@ -594,6 +621,25 @@ public class WatcherAccessibilityService extends AccessibilityService implements
             return moveCaptureTarget(view, event);
         }
 
+        if (view == capture) {
+            if (event.getAction() == MotionEvent.ACTION_DOWN || event.getAction() == MotionEvent.ACTION_MOVE) {
+                captureX = (int) event.getX();
+                captureY = (int) event.getY();
+                if (captureTarget != null) {
+                    FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) captureTarget.getLayoutParams();
+                    int size = dp(64);
+                    params.leftMargin = captureX - (size / 2);
+                    params.topMargin = captureY - (size / 2);
+                    captureTarget.setLayoutParams(params);
+                }
+                if (captureHint != null) {
+                    captureHint.setText("Target Tap #" + (tapCount() + 1) + " · (" + captureX + ", " + captureY + ")");
+                }
+                return true;
+            }
+            return true;
+        }
+
         if (panelParams == null || windows == null || panel == null) return true;
         if (event.getAction() == MotionEvent.ACTION_DOWN) {
             dragStartX = panelParams.x;
@@ -629,16 +675,15 @@ public class WatcherAccessibilityService extends AccessibilityService implements
 
     private void showCapture() {
         if (windows == null || capture != null) return;
-        if (!isTargetActive(Prefs.targetPackage(this))) {
-            hideCapture();
-            Prefs.setLastStatus(this, Prefs.targetLabel(this) + " is not active");
-            return;
+
+        if (panel != null) {
+            panel.setVisibility(View.GONE);
         }
 
         FrameLayout root = new FrameLayout(this);
-        root.setBackgroundColor(0x1A000000);
+        root.setBackgroundColor(0x2A000000);
 
-        int size = dp(64);
+        final int size = dp(64);
         DisplayMetrics metrics = getResources().getDisplayMetrics();
         captureX = metrics.widthPixels / 2;
         captureY = metrics.heightPixels / 2;
@@ -651,25 +696,39 @@ public class WatcherAccessibilityService extends AccessibilityService implements
         targetParams.leftMargin = captureX - (size / 2);
         targetParams.topMargin = captureY - (size / 2);
         root.addView(captureTarget, targetParams);
+        root.setOnTouchListener(this);
 
         LinearLayout controls = new LinearLayout(this);
         controls.setOrientation(LinearLayout.VERTICAL);
         controls.setPadding(dp(14), dp(12), dp(14), dp(12));
-        controls.setBackgroundColor(0xEE0F172A);
+        GradientDrawable ctrlBg = new GradientDrawable();
+        ctrlBg.setColor(0xEE0F172A);
+        ctrlBg.setCornerRadii(new float[]{dp(16), dp(16), dp(16), dp(16), 0, 0, 0, 0});
+        ctrlBg.setStroke(dp(1), 0xFF334155);
+        controls.setBackground(ctrlBg);
 
         captureHint = label("Target Tap #" + (tapCount() + 1) + " · (" + captureX + ", " + captureY + ")");
         captureHint.setTextSize(14);
         captureHint.setTypeface(null, Typeface.BOLD);
-        captureHint.setPadding(0, dp(4), 0, dp(8));
+        captureHint.setPadding(0, dp(4), 0, dp(6));
         controls.addView(captureHint);
+
+        TextView captureSubHint = new TextView(this);
+        captureSubHint.setText("Tap anywhere on screen or drag the crosshair to set target location.");
+        captureSubHint.setTextSize(11);
+        captureSubHint.setTextColor(0xFF94A3B8);
+        captureSubHint.setPadding(0, 0, 0, dp(8));
+        controls.addView(captureSubHint);
 
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
-        Button add = button("Add Tap #" + (tapCount() + 1), "addTap");
+        Button add = primaryButton("✓ Add Tap #" + (tapCount() + 1), "addTap");
         row.addView(add, weighted());
 
-        Button cancel = button("Cancel", "cancelCapture");
-        row.addView(cancel, weighted());
+        Button cancel = button("✕ Cancel", "cancelCapture");
+        LinearLayout.LayoutParams cancelParams = weighted();
+        cancelParams.leftMargin = dp(8);
+        row.addView(cancel, cancelParams);
         controls.addView(row);
 
         FrameLayout.LayoutParams controlsParams = new FrameLayout.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM);
@@ -697,7 +756,7 @@ public class WatcherAccessibilityService extends AccessibilityService implements
             captureX = params.leftMargin + (size / 2);
             captureY = params.topMargin + (size / 2);
             if (captureHint != null) {
-                captureHint.setText("Target Tap #" + (tapCount() + 1) + " · Coordinates: (" + captureX + ", " + captureY + ")");
+                captureHint.setText("Target Tap #" + (tapCount() + 1) + " · (" + captureX + ", " + captureY + ")");
             }
             return true;
         }
@@ -705,11 +764,6 @@ public class WatcherAccessibilityService extends AccessibilityService implements
     }
 
     private void addCapturedTap() {
-        if (!isTargetActive(Prefs.targetPackage(this))) {
-            hideCapture();
-            Prefs.setLastStatus(this, Prefs.targetLabel(this) + " is not active");
-            return;
-        }
         append("tap " + captureX + " " + captureY);
         hideCapture();
     }
@@ -722,6 +776,9 @@ public class WatcherAccessibilityService extends AccessibilityService implements
             capture = null;
             captureTarget = null;
             captureHint = null;
+        }
+        if (panel != null) {
+            panel.setVisibility(View.VISIBLE);
         }
     }
 
@@ -1115,6 +1172,7 @@ public class WatcherAccessibilityService extends AccessibilityService implements
 
         public TargetReticleView(Context context) {
             super(context);
+            setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
             ringPaint.setColor(0xFF22C55E);
             ringPaint.setStyle(Paint.Style.STROKE);
             ringPaint.setStrokeWidth(dp(2f));
