@@ -118,12 +118,21 @@ Runs a lightweight, battery-optimized foreground listener on the device with **I
 ## 🛠️ Quickstart: Build & 1-Click Provision
 
 ### Prerequisites
-- Android SDK (`build-tools`, `platforms;android-33`)
-- PowerShell (Windows) or ADB
+- Android SDK: `platform-tools`, `build-tools;33.0.2`, `platforms;android-33-ext5`
+  (`build.ps1` reads `build-tools\33.0.2` and `platforms\android-33-ext5\android.jar` — these exact versions)
+- JDK with `javac`, `java`, `keytool` on PATH (JDK 22 works; `--release 8` only emits obsolete-target warnings)
+- `ANDROID_SDK_ROOT` or `ANDROID_HOME` pointing at the SDK
+- PowerShell (Windows)
 
 ### 1. Build the Debug APK
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\build.ps1
+```
+
+`build.ps1` signs with a debug keystore it generates at `$env:TEMP\darwin-watcher-debug.keystore`. That key is **not** the one the committed APK was signed with, so a locally built APK cannot `install -r` over a copy installed from `build/darwin-watcher-debug.apk`. You get `INSTALL_FAILED_UPDATE_INCOMPATIBLE` and must `adb uninstall com.darwin.watcher` first — **which wipes schedules, profiles and Telegram settings.** Back up first:
+
+```powershell
+adb shell "run-as com.darwin.watcher cat /data/data/com.darwin.watcher/shared_prefs/darwin_watcher.xml" > prefs-backup.xml
 ```
 
 ### 2. Automated Install & 24/7 Provisioning (USB or Wireless ADB)
@@ -134,7 +143,66 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 # For Wireless ADB connected phone:
 powershell -ExecutionPolicy Bypass -File .\install.ps1 192.168.1.10:43387
 ```
-*The `install.ps1` script automatically installs the APK, grants `WRITE_SECURE_SETTINGS`, whitelists battery optimization, configures auto-start AppOps, and locks accessibility in Android Secure Settings.*
+
+`install.ps1` installs the APK, grants `WRITE_SECURE_SETTINGS`, whitelists doze/battery optimisation, applies OEM-specific keep-alive settings, and appends the accessibility service to Android Secure Settings. It reports **PASS/FAIL/SKIP per command** and finishes with a 7-check verification of actual end state, then exits non-zero if anything failed. It is idempotent — re-running a healthy device changes nothing.
+
+Wireless ADB on Android 11+ needs a one-time pairing before `install.ps1 <ip>:<port>` will work:
+```powershell
+adb pair <ip>:<pairing-port>   # 6-digit code from Wireless debugging > Pair device with pairing code
+```
+The pairing port differs from the connect port shown under "IP address & Port". `adb connect` to an unpaired port reports the device as `offline`.
+
+---
+
+## 📱 Per-device notes
+
+Automation coordinates are **screen-resolution specific**. Re-measure them per device — never rescale by hand. See `tasks/coords.md` for the measured map of the current device and the re-calibration procedure.
+
+| Device | Screen | Status |
+|---|---|---|
+| Xiaomi Mi 11X (MIUI, Android 13) | 1080x2400 | original target |
+| Samsung SM-M055F / Galaxy M05 (One UI 8, Android 16 / API 36) | 720x1600 | verified working |
+
+### Samsung / One UI
+
+`install.ps1` handles what ADB can reach. These have **no ADB equivalent** and are required:
+
+1. Settings → Battery → Background usage limits → **Never sleeping apps** → add Darwin Watcher **and the target app**
+2. Same screen → **Put unused apps to sleep** → OFF
+3. Settings → Battery → **Optimise battery usage** → Darwin Watcher → not optimised
+4. Developer options → **USB debugging (Security settings)** → ON (needed for `WRITE_SECURE_SETTINGS` after a factory reset)
+
+One UI runs **Freecess**, which repeatedly tries to freeze both this app and the target app (visible as `FreecessHandler: freeze <pkg> result : 2` in logcat). It cannot be disabled over ADB — step 1 above is the mitigation.
+
+The MIUI keep-alive AppOps (`10008` autostart, `10021` lock screen, `10022` background popups) **do not exist on One UI** and are skipped automatically.
+
+### Android 14+ / targetSdk warning
+
+`targetSdkVersion` is **33** and must stay there. Raising it to 34+ makes Android require `android:foregroundServiceType` plus a matching `FOREGROUND_SERVICE_*` permission, neither of which `TelegramRemoteService` declares — the 24/7 listener would fail to start. Verified running on Android 16 at targetSdk 33 (`types=0x00000000`).
+
+`android:persistent="true"` in the manifest is silently ignored for non-system apps. It contributes nothing to the keep-alive.
+
+### Useful verification commands
+
+```powershell
+adb shell "dumpsys activity services com.darwin.watcher | grep -E 'ServiceRecord|isForeground'"
+adb shell "dumpsys alarm | grep -B1 -A3 'Alarm{.*com.darwin.watcher'"
+adb shell "am get-standby-bucket com.darwin.watcher"   # 5 = EXEMPTED (best), 10 = ACTIVE
+adb shell settings get secure enabled_accessibility_services
+adb shell "run-as com.darwin.watcher cat /data/data/com.darwin.watcher/shared_prefs/darwin_watcher.xml"
+```
+
+Trigger a run through the real alarm path (uses the currently active profile):
+```powershell
+adb shell "am broadcast -n com.darwin.watcher/.AlarmReceiver --ez isTest true"
+```
+
+Do **not** launch the target with `monkey -p <pkg> 1` — monkey injects one pseudo-random event after launching, which can press Back and silently drop the app out of the foreground. Use `am start -n <pkg>/<activity>`.
+
+### Two behaviours that surprise people
+
+- **A firing schedule rewrites the active profile.** `AlarmReceiver` calls `Prefs.setTargetApp` and `Prefs.setCurrentProfile` from the schedule's own fields, so after any scheduled run the active profile is that schedule's profile — not whatever you had selected. Check the active profile before a manual run.
+- **Action text is keyword-filtered.** `Runner.parse()` rejects the whole profile if the text contains any of ~30 words (`checkin`, `attendance`, `login`, `otp`, `password`, …). Keep profiles to bare `tap` / `wait` / `swipe` lines — a descriptive comment mentioning one of those words will throw `Blocked risky word`.
 
 ---
 
