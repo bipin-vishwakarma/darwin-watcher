@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Wedding Invitation</title>
+<meta name="description" content="You are invited to our wedding." />
+<meta name="theme-color" content="#5C0B18" />
+
+<!-- social preview (og:title / og:description are filled in by main.js) -->
+<meta property="og:type" content="website" />
+<meta property="og:title" content="Wedding Invitation" />
+<meta property="og:description" content="You are invited to our wedding." />
+
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,300;1,400&family=Marcellus&family=Mukta:wght@300;400;600&family=Tiro+Devanagari+Hindi&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="assets/css/style.css" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💍</text></svg>" />
+</head>
+
+<body class="is-locked">
+
+<!-- ══════════════════════════════════════════════════ 1. THE DOORS (opener) -->
+<div class="doors" id="doors">
+  <div class="doors__panel doors__panel--left">
+    <div class="doors__carving" aria-hidden="true"></div>
+  </div>
+  <div class="doors__panel doors__panel--right">
+    <div class="doors__carving" aria-hidden="true"></div>
+  </div>
+
+  <div class="opener" id="opener">
+    <p class="opener__blessing">॥ श्री गणेशाय नमः ॥</p>
+
+    <svg class="opener__mandala" viewBox="0 0 200 200" aria-hidden="true">
+      <g fill="none" stroke="currentColor" stroke-width="1.1">
+        <circle cx="100" cy="100" r="34" />
+        <circle cx="100" cy="100" r="46" stroke-dasharray="2 5" />
+        <circle cx="100" cy="100" r="72" />
+        <circle cx="100" cy="100" r="80" stroke-dasharray="1 6" />
+        <g class="mandala__petals"></g>
+      </g>
+    </svg>
+
+    <p class="opener__eyebrow" id="openerEyebrow"></p>
+    <h1 class="opener__names">
+      <span class="opener__name" id="openerBride"></span>
+      <span class="opener__amp" aria-hidden="true">&amp;</span>
+      <span class="opener__name" id="openerGroom"></span>
+    </h1>
+    <p class="opener__sub" id="openerSub"></p>
+    <p class="opener__date" id="openerDate"></p>
+
+    <button class="btn-open" id="btnOpen" type="button">
+      <span class="btn-open__ring" aria-hidden="true"></span>
+      <span id="btnOpenLabel">Open Invitation</span>
+    </button>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════ floating controls -->
+<div class="controls">
+  <button class="ctrl" id="btnMusic" type="button" hidden
+          aria-pressed="false" aria-label="Play background music">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-music"/></svg>
+    <span class="ctrl__tip" id="musicTip">Music</span>
+  </button>
+  <button class="ctrl" id="btnShare" type="button" aria-label="Share on WhatsApp">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-whatsapp"/></svg>
+    <span class="ctrl__tip">Share</span>
+  </button>
+</div>
+
+<main id="invite" class="invite" aria-hidden="true">
+
+  <!-- ═══════════════════════════════════════════════════════════ 2. THE HERO -->
+  <header class="hero">
+    <div class="hero__garland" aria-hidden="true"></div>
+
+    <div class="hero__inner reveal">
+      <p class="hero__eyebrow">Save the date</p>
+      <h1 class="hero__names">
+        <span id="heroBride"></span>
+        <span class="hero__amp">&amp;</span>
+        <span id="heroGroom"></span>
+      </h1>
+      <div class="rule" aria-hidden="true"><span></span><i></i><span></span></div>
+      <p class="hero__date" id="heroDate"></p>
+      <p class="hero__venue" id="heroVenue"></p>
+      <p class="hero__hashtag" id="heroHashtag"></p>
+    </div>
+
+    <div class="hero__scroll" aria-hidden="true"><span></span></div>
+  </header>
+
+  <!-- ══════════════════════════════════════════════════════ 3. THE COUNTDOWN -->
+  <section class="section section--tight countdown reveal" aria-labelledby="cdTitle">
+    <h2 class="section__title" id="cdTitle">Counting down</h2>
+    <div class="countdown__grid" id="countdown" role="timer" aria-live="off"></div>
+    <p class="countdown__note" id="countdownNote"></p>
+  </section>
+
+  <!-- ══════════════════════════════════════════════════════════ 4. THE COUPLE -->
+  <section class="section couple" aria-labelledby="coupleTitle">
+    <h2 class="section__title reveal" id="coupleTitle">The Couple</h2>
+    <div class="couple__grid" id="coupleGrid"></div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════ 5. OUR STORY -->
+  <section class="section story" aria-labelledby="storyTitle">
+    <h2 class="section__title reveal" id="storyTitle">Our Story</h2>
+    <ol class="story__line" id="storyLine"></ol>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════ 6. THE CELEBRATIONS -->
+  <section class="section events" aria-labelledby="eventsTitle">
+    <h2 class="section__title reveal" id="eventsTitle">The Celebrations</h2>
+    <p class="section__lede reveal">Five days. One family. We would love you at every one of them.</p>
+    <div class="events__grid" id="eventsGrid"></div>
+  </section>
+
+  <!-- ══════════════════════════════════════════════════════════ 7. THE GALLERY -->
+  <section class="section gallery" aria-labelledby="galleryTitle">
+    <h2 class="section__title reveal" id="galleryTitle">Moments</h2>
+    <div class="gallery__grid" id="galleryGrid"></div>
+  </section>
+
+  <!-- ═════════════════════════════════════════════════════════ 8. WISHES WALL -->
+  <section class="section wishes" aria-labelledby="wishesTitle">
+    <h2 class="section__title reveal" id="wishesTitle">Wishes &amp; Blessings</h2>
+    <p class="section__lede reveal" id="wishesPrompt"></p>
+
+    <form class="wishes__form reveal" id="wishForm" novalidate>
+      <div class="field">
+        <label for="wishName">Your name</label>
+        <input id="wishName" name="name" type="text" maxlength="60" required autocomplete="name" />
+      </div>
+      <div class="field">
+        <label for="wishText">Your message</label>
+        <textarea id="wishText" name="message" rows="3" maxlength="400" required></textarea>
+      </div>
+      <button class="btn" type="submit" id="wishSubmit">Send blessing</button>
+      <p class="wishes__status" id="wishStatus" role="status" aria-live="polite"></p>
+    </form>
+
+    <div class="wishes__wall" id="wishWall"></div>
+  </section>
+
+  <!-- ═════════════════════════════════════════════════════════════ 9. CLOSING -->
+  <footer class="closing">
+    <svg class="closing__mandala" viewBox="0 0 200 200" aria-hidden="true">
+      <g fill="none" stroke="currentColor" stroke-width="1">
+        <circle cx="100" cy="100" r="26" />
+        <circle cx="100" cy="100" r="40" stroke-dasharray="2 4" />
+        <g class="mandala__petals"></g>
+      </g>
+    </svg>
+    <p class="closing__line" id="closingLine"></p>
+    <div class="closing__contacts" id="closingContacts"></div>
+    <p class="closing__sign" id="closingSign"></p>
+    <p class="closing__hashtag" id="closingHashtag"></p>
+  </footer>
+
+</main>
+
+<!-- lightbox for the gallery -->
+<div class="lightbox" id="lightbox" hidden>
+  <button class="lightbox__close" id="lightboxClose" type="button" aria-label="Close">&times;</button>
+  <figure class="lightbox__fig">
+    <img id="lightboxImg" alt="" />
+    <figcaption id="lightboxCap"></figcaption>
+  </figure>
+</div>
+
+<!-- petals container -->
+<div class="petals" id="petals" aria-hidden="true"></div>
+
+<!-- icon sprite -->
+<svg style="display:none" aria-hidden="true">
+  <symbol id="i-music" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M9 18V5l10-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="16" cy="16" r="3"/>
+  </symbol>
+  <symbol id="i-whatsapp" viewBox="0 0 24 24" fill="currentColor">
+    <path d="M12.04 2C6.58 2 2.13 6.45 2.13 11.91c0 1.75.46 3.45 1.32 4.95L2 22l5.25-1.38a9.9 9.9 0 0 0 4.79 1.22h.01c5.46 0 9.91-4.45 9.91-9.91S17.5 2 12.04 2Zm0 18.02h-.01a8.2 8.2 0 0 1-4.19-1.15l-.3-.18-3.12.82.83-3.04-.2-.31a8.16 8.16 0 0 1-1.26-4.35c0-4.54 3.7-8.23 8.25-8.23a8.23 8.23 0 0 1 0 16.44Zm4.52-6.16c-.25-.12-1.47-.72-1.69-.8-.23-.09-.39-.13-.56.12-.16.25-.64.8-.79.97-.14.16-.29.19-.54.06-.25-.12-1.05-.39-1.99-1.23-.74-.66-1.23-1.47-1.38-1.72-.14-.25-.01-.38.11-.51.11-.11.25-.29.37-.43.13-.15.17-.25.25-.41.08-.17.04-.31-.02-.43-.06-.12-.56-1.34-.76-1.84-.2-.48-.4-.42-.56-.43h-.47c-.16 0-.43.06-.65.31-.22.25-.85.83-.85 2.03s.87 2.35.99 2.51c.12.16 1.72 2.63 4.17 3.69.58.25 1.04.4 1.39.51.59.19 1.12.16 1.54.1.47-.07 1.47-.6 1.68-1.18.21-.58.21-1.07.14-1.18-.06-.11-.22-.17-.47-.29Z"/>
+  </symbol>
+  <symbol id="i-pin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/>
+  </symbol>
+  <symbol id="i-cal" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>
+  </symbol>
+</svg>
+
+<script src="assets/js/config.js"></script>
+<script src="assets/js/main.js"></script>
+</body>
+</html>
