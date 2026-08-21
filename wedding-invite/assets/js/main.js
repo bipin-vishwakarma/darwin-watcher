@@ -458,12 +458,67 @@
     });
   }
 
-  /* ======================================================= 14. OPEN THE DOORS */
-  var doors = $("#doors"), invite = $("#invite");
+  /* ==================================================== 14. OPEN THE STAGE */
+  var stage = $("#stage"), invite = $("#invite"), opener = $("#opener");
+
+  var STYLES = ["doors", "curtains", "envelope", "unfold"];
+  var qsStyle = (new URLSearchParams(window.location.search).get("opener") || "").toLowerCase();
+  var style = STYLES.indexOf(qsStyle) > -1 ? qsStyle
+            : (STYLES.indexOf((C.opener.style || "").toLowerCase()) > -1 ? C.opener.style.toLowerCase() : "doors");
+  stage.setAttribute("data-style", style);
+
+  var COVER_NAMES = esc(bride.name) + "<em>and</em>" + esc(groom.name);
+  var TAP_HINT = "Tap to open";
+
+  // Scenery goes in front of .opener in the DOM but behind it in z-order,
+  // so the shared invitation card is revealed as the scenery parts.
+  var SCENERY = {
+    doors: function () {
+      return '<div class="leaf leaf--l"><div class="leaf__carving"></div></div>' +
+             '<div class="leaf leaf--r"><div class="leaf__carving"></div></div>';
+    },
+    curtains: function () {
+      return '<div class="drape drape--l"></div>' +
+             '<div class="drape drape--r"></div>' +
+             '<div class="valance"></div>';
+    },
+    envelope: function () {
+      return '<div class="env">' +
+               '<div class="env__face">' +
+                 '<p class="env__names">' + COVER_NAMES + "</p>" +
+                 '<p class="env__hint">' + TAP_HINT + "</p>" +
+               "</div>" +
+               '<div class="env__flap"></div>' +
+               '<div class="env__seal">\u0950</div>' +
+               '<button class="cover-hit" type="button" data-open aria-label="' + esc(C.opener.buttonLabel || "Open Invitation") + '"></button>' +
+             "</div>";
+    },
+    unfold: function () {
+      return '<div class="fold">' +
+               '<div class="fold__wing fold__wing--l"></div>' +
+               '<div class="fold__wing fold__wing--r"></div>' +
+               '<div class="fold__seam"></div>' +
+               '<div class="fold__cover">' +
+                 '<div class="fold__medallion">\u0950</div>' +
+                 '<p class="fold__names">' + COVER_NAMES + "</p>" +
+                 '<p class="fold__hint">' + TAP_HINT + "</p>" +
+               "</div>" +
+               '<button class="cover-hit" type="button" data-open aria-label="' + esc(C.opener.buttonLabel || "Open Invitation") + '"></button>' +
+             "</div>";
+    }
+  };
+
+  var scenery = document.createElement("div");
+  scenery.innerHTML = SCENERY[style]();
+  while (scenery.firstChild) stage.insertBefore(scenery.firstChild, opener);
+
+  // Styles whose cover hides the invitation card until it opens need a longer
+  // beat so the reveal is actually seen before the stage clears.
+  var CLEAR_AFTER = (style === "envelope" || style === "unfold") ? 2400 : 1700;
 
   function openInvitation() {
-    if (doors.classList.contains("is-open")) return;
-    doors.classList.add("is-open");
+    if (stage.classList.contains("is-open")) return;
+    stage.classList.add("is-open");
     document.body.classList.remove("is-locked");
     document.body.classList.add("is-open");
     invite.setAttribute("aria-hidden", "false");
@@ -471,11 +526,13 @@
     if (audio) play();               // counts as a user gesture, so autoplay is allowed
     startPetals();
     watchReveals();
+    setTimeout(function () { stage.classList.add("is-done"); }, CLEAR_AFTER - 700);
     setTimeout(function () {
-      doors.style.display = "none";
+      stage.style.display = "none";
       window.scrollTo({ top: 0 });
-    }, 1700);
+    }, CLEAR_AFTER);
   }
 
   $("#btnOpen").addEventListener("click", openInvitation);
+  $$("[data-open]").forEach(function (el) { el.addEventListener("click", openInvitation); });
 })();

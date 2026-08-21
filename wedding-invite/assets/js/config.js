@@ -32,8 +32,15 @@ const WEDDING = {
      local time of the venue).                                                */
   weddingDate: "2026-12-06T19:30:00",
 
-  /* -------------------------------------------------------- opening screen */
+  /* -------------------------------------------------------- opening screen
+     style: how the invitation reveals itself. One of —
+       "doors"    carved temple doors swing apart
+       "curtains" silk drapes under a gold valance draw back
+       "envelope" wax-sealed envelope, the flap lifts and the card rises
+       "unfold"   a folded card whose two ornamented wings swing open
+     Add ?opener=curtains to the URL to preview any style without editing this. */
   opener: {
+    style: "doors",
     invitationLine: "Together with our families",
     subLine: "we joyfully invite you to celebrate our wedding",
     buttonLabel: "Open Invitation"
