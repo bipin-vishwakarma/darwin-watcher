@@ -62,8 +62,35 @@ public final class Prefs {
         return prefs(context).getString(PROFILES + "_" + pkg, prefs(context).getString(PROFILES, "Default"));
     }
 
+    /** Calculator package per OEM, most specific first, then a generic fallback. */
+    private static final String[] CALCULATOR_CANDIDATES = {
+        "com.miui.calculator",                    // Xiaomi / MIUI / HyperOS
+        "com.sec.android.app.popupcalculator",    // Samsung / One UI
+        "com.google.android.calculator",          // Pixel / AOSP builds with Google apps
+        "com.android.calculator2"                 // stock AOSP
+    };
+
+    /**
+     * Default target when nothing has been chosen yet. Resolves a calculator that is
+     * actually installed rather than assuming MIUI's, which does not exist outside
+     * Xiaomi and left a fresh profile pointing at a missing package.
+     */
+    public static String defaultTargetPackage(Context context) {
+        if (context != null) {
+            android.content.pm.PackageManager pm = context.getPackageManager();
+            for (int i = 0; i < CALCULATOR_CANDIDATES.length; i++) {
+                try {
+                    if (pm.getLaunchIntentForPackage(CALCULATOR_CANDIDATES[i]) != null) {
+                        return CALCULATOR_CANDIDATES[i];
+                    }
+                } catch (Exception ignored) { }
+            }
+        }
+        return CALCULATOR_CANDIDATES[0];
+    }
+
     public static String targetPackage(Context context) {
-        return prefs(context).getString(TARGET_PACKAGE, "com.miui.calculator");
+        return prefs(context).getString(TARGET_PACKAGE, defaultTargetPackage(context));
     }
 
     public static String targetLabel(Context context) {

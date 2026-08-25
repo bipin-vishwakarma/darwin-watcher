@@ -87,10 +87,30 @@ public final class DeviceUtils {
         }
     }
 
+    public static boolean isSamsung() {
+        String m = Build.MANUFACTURER != null ? Build.MANUFACTURER : "";
+        return m.toLowerCase().contains("samsung");
+    }
+
+    public static boolean isXiaomi() {
+        String m = (Build.MANUFACTURER != null ? Build.MANUFACTURER : "") + " "
+                 + (Build.BRAND != null ? Build.BRAND : "");
+        m = m.toLowerCase();
+        return m.contains("xiaomi") || m.contains("redmi") || m.contains("poco");
+    }
+
     public static String getDeviceModelName() {
         String manufacturer = Build.MANUFACTURER != null ? Build.MANUFACTURER.trim() : "";
         String model = Build.MODEL != null ? Build.MODEL.trim() : "";
         String marketName = Build.DEVICE != null ? Build.DEVICE.trim() : "";
+
+        // Samsung reports raw sales codes (SM-M055F) rather than the name on the box.
+        // Checked before the startsWith() shortcut below, which would otherwise pass
+        // "Samsung SM-M055F" straight through.
+        if (isSamsung()) {
+            String galaxy = galaxyName(model);
+            if (galaxy != null) return "Samsung " + galaxy;
+        }
 
         if (model.toLowerCase().startsWith(manufacturer.toLowerCase())) {
             return capitalize(model);
@@ -242,6 +262,38 @@ public final class DeviceUtils {
             }
         } catch (Exception ignored) { }
         return null;
+    }
+
+    /**
+     * Maps a Samsung sales code to its retail name. Only the prefix carries the series,
+     * so this stays short instead of enumerating every SKU: SM-M055F -> Galaxy M05.
+     * Returns null when the code is not recognised, so the caller can fall back.
+     */
+    private static String galaxyName(String model) {
+        if (model == null) return null;
+        String m = model.toUpperCase().trim();
+        if (!m.startsWith("SM-")) return null;
+        String code = m.substring(3);
+        if (code.length() < 2) return null;
+
+        char series = code.charAt(0);
+        StringBuilder digits = new StringBuilder();
+        for (int i = 1; i < code.length() && Character.isDigit(code.charAt(i)); i++) {
+            digits.append(code.charAt(i));
+        }
+        if (digits.length() == 0) return null;
+
+        // Only the M and A series map arithmetically: the padded number minus its
+        // trailing variant digit is the retail number (M055 -> M05, A546 -> A54).
+        // S, N and F do NOT follow this - SM-S911B is the Galaxy S23, not "S91", and
+        // SM-F946B is the Z Fold5 - so they fall through to the raw sales code rather
+        // than being confidently wrong.
+        if (series != 'M' && series != 'A') return null;
+
+        String num = digits.toString();
+        if (num.length() < 3) return null;
+        num = num.substring(0, num.length() - 1);
+        return "Galaxy " + series + num;
     }
 
     private static String capitalize(String str) {

@@ -77,18 +77,18 @@ Full detail in [plan.md](plan.md). Archived Samsung port plan: [plan-samsung-por
 
 ## Phase 3 — Folded-in Samsung port leftovers
 
-- [ ] **Task 6** — Device-aware naming and no MIUI dead-ends
-  - [ ] `SM-M055F` → `Samsung Galaxy M05`; Xiaomi mappings (`DeviceUtils.java:100-105`) unchanged
-  - [ ] `isSamsung()` / `isXiaomi()` helpers
-  - [ ] MIUI keep-alive button (`MainActivity.java:968-971`) shows One UI checklist on Samsung
-  - [ ] `openMiuiAutostart()` (`:1186-1189`) opens a real Samsung screen, fallback to app-details — never a dead tap
-  - [ ] `Prefs.targetPackage()` (`Prefs.java:66`) resolves an installed calculator at runtime; Darwinbox prefs untouched
+- [x] **Task 6** — Device-aware naming and no MIUI dead-ends
+  - [x] `SM-M055F` → `Samsung Galaxy M05`; Xiaomi mappings (`DeviceUtils.java:100-105`) unchanged
+  - [x] `isSamsung()` / `isXiaomi()` helpers
+  - [x] MIUI keep-alive button (`MainActivity.java:968-971`) shows One UI checklist on Samsung
+  - [x] `openMiuiAutostart()` (`:1186-1189`) opens a real Samsung screen, fallback to app-details — never a dead tap
+  - [x] `Prefs.targetPackage()` (`Prefs.java:66`) resolves an installed calculator at runtime; Darwinbox prefs untouched
 
 ---
 
 ## Phase 4 — Build, install, restore
 
-- [ ] **Task 7** — Rebuild and reinstall without losing configuration
+- [x] **Task 7** — Rebuild and reinstall without losing configuration
   - [ ] `build.ps1` succeeds, `apksigner verify` passes, `targetSdkVersion` still **33**
   - [ ] Fresh prefs snapshot immediately before uninstall
   - [ ] `adb uninstall` → install new APK → restore prefs via `run-as` → `install.ps1`
