@@ -1269,81 +1269,76 @@ public class WatcherAccessibilityService extends AccessibilityService implements
         void onFinished();
     }
 
-    /** Receives a JPEG frame, or null if the capture failed. */
-    public interface FrameReady {
-        void onFrame(byte[] jpeg);
+    /** Receives the raw screen bitmap, or null if the capture failed. */
+    public interface BitmapReady {
+        void onBitmap(Bitmap bmp);
     }
 
     /**
-     * Single screenshot implementation. maxWidth <= 0 keeps the native resolution.
-     * Note the platform rate-limits AccessibilityService.takeScreenshot to roughly one
-     * call per second; callers that refresh on a timer must stay above that.
+     * The single screenshot implementation. Hands back the raw bitmap and lets callers
+     * own presentation - the run screenshot wants full resolution, the live view wants
+     * a cropped, grid-annotated, downscaled frame.
+     *
+     * The platform rate-limits AccessibilityService.takeScreenshot to roughly one call
+     * per second, so anything refreshing on a timer must stay above that.
      */
-    public void captureFrame(int maxWidth, int quality, FrameReady cb) {
+    public void captureBitmap(BitmapReady cb) {
         if (Build.VERSION.SDK_INT >= 30) {
             try {
-                takeScreenshot(Display.DEFAULT_DISPLAY, getMainExecutor(),
-                        new FrameCallbackHandler(maxWidth, quality, cb));
+                takeScreenshot(Display.DEFAULT_DISPLAY, getMainExecutor(), new BitmapCallbackHandler(cb));
                 return;
             } catch (Throwable t) {
                 android.util.Log.e("WatcherService", "takeScreenshot call failed", t);
             }
         }
-        if (cb != null) cb.onFrame(null);
+        if (cb != null) cb.onBitmap(null);
     }
 
-    private static final class FrameCallbackHandler implements AccessibilityService.TakeScreenshotCallback {
-        private final int maxWidth;
-        private final int quality;
-        private final FrameReady cb;
+    public static byte[] compressJpeg(Bitmap bmp, int quality) {
+        if (bmp == null) return null;
+        try {
+            ByteArrayOutputStream stream = new ByteArrayOutputStream();
+            bmp.compress(Bitmap.CompressFormat.JPEG, quality, stream);
+            return stream.toByteArray();
+        } catch (Throwable t) {
+            return null;
+        }
+    }
 
-        FrameCallbackHandler(int maxWidth, int quality, FrameReady cb) {
-            this.maxWidth = maxWidth;
-            this.quality = quality;
+    private static final class BitmapCallbackHandler implements AccessibilityService.TakeScreenshotCallback {
+        private final BitmapReady cb;
+
+        BitmapCallbackHandler(BitmapReady cb) {
             this.cb = cb;
         }
 
         @Override
         public void onSuccess(AccessibilityService.ScreenshotResult result) {
-            byte[] bytes = null;
+            Bitmap out = null;
             try {
                 if (Build.VERSION.SDK_INT >= 30 && result != null) {
                     Bitmap hw = Bitmap.wrapHardwareBuffer(result.getHardwareBuffer(), result.getColorSpace());
                     if (hw != null) {
-                        Bitmap copy = hw.copy(Bitmap.Config.ARGB_8888, false);
+                        out = hw.copy(Bitmap.Config.ARGB_8888, false);
                         hw.recycle();
                         result.getHardwareBuffer().close();
-                        if (copy != null) {
-                            if (maxWidth > 0 && copy.getWidth() > maxWidth) {
-                                int h = (int) ((long) copy.getHeight() * maxWidth / copy.getWidth());
-                                Bitmap scaled = Bitmap.createScaledBitmap(copy, maxWidth, Math.max(1, h), true);
-                                if (scaled != null && scaled != copy) {
-                                    copy.recycle();
-                                    copy = scaled;
-                                }
-                            }
-                            ByteArrayOutputStream stream = new ByteArrayOutputStream();
-                            copy.compress(Bitmap.CompressFormat.JPEG, quality, stream);
-                            bytes = stream.toByteArray();
-                            copy.recycle();
-                        }
                     }
                 }
             } catch (Throwable t) {
                 android.util.Log.e("WatcherService", "Screenshot processing error", t);
             }
-            if (cb != null) cb.onFrame(bytes);
+            if (cb != null) cb.onBitmap(out);
         }
 
         @Override
         public void onFailure(int errorCode) {
             android.util.Log.e("WatcherService", "Screenshot failed: code " + errorCode);
-            if (cb != null) cb.onFrame(null);
+            if (cb != null) cb.onBitmap(null);
         }
     }
 
-    /** Sends the end-of-run screenshot, then reports completion either way. */
-    private static final class SendRunScreenshot implements FrameReady {
+    /** Sends the end-of-run screenshot at full resolution, then reports completion. */
+    private static final class SendRunScreenshot implements BitmapReady {
         private final Context context;
         private final ScreenshotDone done;
 
@@ -1353,7 +1348,9 @@ public class WatcherAccessibilityService extends AccessibilityService implements
         }
 
         @Override
-        public void onFrame(byte[] jpeg) {
+        public void onBitmap(Bitmap bmp) {
+            byte[] jpeg = compressJpeg(bmp, 85);
+            if (bmp != null) bmp.recycle();
             if (jpeg != null) {
                 TelegramNotifier.sendPhoto(context, jpeg,
                         "✅ Darwin Watcher: Task finished on " + Prefs.targetLabel(context) + "!", null);
@@ -1365,6 +1362,6 @@ public class WatcherAccessibilityService extends AccessibilityService implements
     }
 
     public void captureScreenshotAndSend(final Context context, final ScreenshotDone done) {
-        captureFrame(0, 85, new SendRunScreenshot(context, done));
+        captureBitmap(new SendRunScreenshot(context, done));
     }
 }
