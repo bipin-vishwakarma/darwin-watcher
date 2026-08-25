@@ -1029,7 +1029,7 @@ public class WatcherAccessibilityService extends AccessibilityService implements
         }
         GestureDescription.StrokeDescription stroke = new GestureDescription.StrokeDescription(path, start, duration);
         GestureDescription gesture = new GestureDescription.Builder().addStroke(stroke).build();
-        if (!dispatchGesture(gesture, new GestureCallback(done), null)) {
+        if (!dispatchGesture(gesture, new GestureCallback(done), null) && done != null) {
             done.call(false, "Gesture dispatch failed");
         }
     }
@@ -1256,12 +1256,16 @@ public class WatcherAccessibilityService extends AccessibilityService implements
 
         @Override
         public void onCompleted(GestureDescription gestureDescription) {
-            done.call(true, "OK");
+            // done is null for fire-and-forget taps (live view, /tap, /swipe). This
+            // callback runs on the main thread, so an unchecked null deref here throws
+            // on the main Looper and wedges it - which silently kills every pending
+            // postDelayed, including the live-view screenshot scheduled after a tap.
+            if (done != null) done.call(true, "OK");
         }
 
         @Override
         public void onCancelled(GestureDescription gestureDescription) {
-            done.call(false, "Gesture cancelled");
+            if (done != null) done.call(false, "Gesture cancelled");
         }
     }
 
