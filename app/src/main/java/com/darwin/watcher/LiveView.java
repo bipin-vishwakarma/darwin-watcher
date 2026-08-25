@@ -204,7 +204,7 @@ public final class LiveView {
             return true;
         }
 
-        HANDLER.postDelayed(new DelayedCapture(context), 900);
+        captureAfterAction(context);
         return true;
     }
 
@@ -216,7 +216,7 @@ public final class LiveView {
         // Come back to the whole screen: after acting, the next thing you want to see
         // is where you ended up, not the patch you were aiming at.
         resetView();
-        HANDLER.postDelayed(new DelayedCapture(context), 1100);
+        captureAfterAction(context);
     }
 
     private static Rect cellRect(Rect r, int row, int col) {
@@ -228,21 +228,45 @@ public final class LiveView {
     }
 
     private static void capture(Context context) {
+        captureWithRetry(context, 0);
+    }
+
+    /**
+     * takeScreenshot() fails while a window transition is animating, which is exactly
+     * when we capture: right after a tap that opened something. A silent failure there
+     * looks like "I tapped and nothing came back", so retry instead of giving up, and
+     * say so out loud if every attempt fails.
+     */
+    private static void captureWithRetry(Context context, int attempt) {
         if (!active) return;
         WatcherAccessibilityService s = WatcherAccessibilityService.current();
         if (s == null) {
-            TelegramNotifier.sendText(context, "⚠️ Live view needs the Accessibility service. Enable it and send `/live` again.", null);
+            TelegramNotifier.sendText(context, "⚠️ Live view needs the Accessibility service. Enable it and send /live again.", null);
             active = false;
             return;
         }
-        s.captureBitmap(new FrameHandler(context.getApplicationContext()));
+        s.captureBitmap(new FrameHandler(context.getApplicationContext(), attempt));
+    }
+
+    private static final int CAPTURE_ATTEMPTS = 4;
+    private static final long CAPTURE_RETRY_MS = 900L;
+
+    /** Frame right after the action, then a second once the screen has settled. */
+    private static final long SETTLE_FIRST_MS = 1400L;
+    private static final long SETTLE_SECOND_MS = 4200L;
+
+    private static void captureAfterAction(Context context) {
+        HANDLER.postDelayed(new DelayedCapture(context), SETTLE_FIRST_MS);
+        HANDLER.postDelayed(new DelayedCapture(context), SETTLE_SECOND_MS);
     }
 
     private static final class FrameHandler implements WatcherAccessibilityService.BitmapReady {
         private final Context context;
+        private final int attempt;
 
-        FrameHandler(Context context) {
+        FrameHandler(Context context, int attempt) {
             this.context = context;
+            this.attempt = attempt;
         }
 
         @Override
@@ -257,11 +281,31 @@ public final class LiveView {
                 return;
             }
             if (full == null) {
-                consecutiveErrors++;
-                if (consecutiveErrors >= 3) stop(context, "screen capture kept failing");
+                if (attempt + 1 < CAPTURE_ATTEMPTS) {
+                    HANDLER.postDelayed(new RetryCapture(context, attempt + 1), CAPTURE_RETRY_MS);
+                } else {
+                    TelegramNotifier.sendText(context,
+                            "⚠️ Could not capture the screen after " + CAPTURE_ATTEMPTS
+                            + " tries. Tap 🔄 Refresh to try again.", null);
+                }
                 return;
             }
             RENDER.execute(new RenderTask(context, full));
+        }
+    }
+
+    private static final class RetryCapture implements Runnable {
+        private final Context context;
+        private final int attempt;
+
+        RetryCapture(Context context, int attempt) {
+            this.context = context;
+            this.attempt = attempt;
+        }
+
+        @Override
+        public void run() {
+            captureWithRetry(context, attempt);
         }
     }
 
@@ -291,8 +335,10 @@ public final class LiveView {
                 return;
             }
             frames++;
-            TelegramNotifier.sendOrEditFrame(context, messageId, jpeg, caption(context),
-                    keyboard(), new ResultHandler(context));
+            String cap = caption(context);
+            String kb = keyboard();
+            TelegramNotifier.sendOrEditFrame(context, messageId, jpeg, cap, kb,
+                    new ResultHandler(context, jpeg, cap, kb, messageId > 0));
         }
     }
 
@@ -356,26 +402,47 @@ public final class LiveView {
 
     private static final class ResultHandler implements TelegramNotifier.MessageCallback {
         private final Context context;
+        private final byte[] jpeg;
+        private final String cap;
+        private final String kb;
+        private final boolean wasEdit;
 
-        ResultHandler(Context context) {
+        ResultHandler(Context context, byte[] jpeg, String cap, String kb, boolean wasEdit) {
             this.context = context;
+            this.jpeg = jpeg;
+            this.cap = cap;
+            this.kb = kb;
+            this.wasEdit = wasEdit;
         }
 
         @Override
         public void onMessage(boolean ok, int id, String error) {
-            if (!ok) {
-                // "message is not modified" only means the screen did not change.
-                if (error != null && error.indexOf("not modified") >= 0) {
-                    consecutiveErrors = 0;
-                    return;
-                }
-                consecutiveErrors++;
-                Log.w(TAG, "frame delivery failed: " + error);
-                if (consecutiveErrors >= 3) stop(context, "Telegram kept rejecting updates");
+            if (ok) {
+                consecutiveErrors = 0;
+                if (id > 0) messageId = id;
                 return;
             }
-            consecutiveErrors = 0;
-            if (id > 0) messageId = id;
+
+            // "message is not modified" only means the screen did not change.
+            if (error != null && error.indexOf("not modified") >= 0) {
+                consecutiveErrors = 0;
+                return;
+            }
+
+            Log.w(TAG, "frame delivery failed: " + error);
+
+            // A failed edit must never mean a lost frame. Post it as a NEW message and
+            // adopt that id - the whole point is that every action produces something
+            // you can see. Only the edit path retries, so this cannot loop.
+            if (wasEdit) {
+                messageId = 0;
+                TelegramNotifier.sendOrEditFrame(context, 0, jpeg, cap, kb,
+                        new ResultHandler(context, jpeg, cap, kb, false));
+                return;
+            }
+
+            consecutiveErrors++;
+            if (consecutiveErrors >= 3) stop(context, "Telegram kept rejecting updates");
         }
     }
 
@@ -434,7 +501,7 @@ public final class LiveView {
         boolean whole = r.width() >= fs.width() && r.height() >= fs.height();
 
         StringBuilder sb = new StringBuilder();
-        sb.append("1-12 zooms into that box · ✥ TAP hits the red crosshair\n");
+        sb.append("Numbers zoom into that box · ✥ TAP hits the red crosshair\n");
         if (whole) {
             sb.append("📐 whole screen ").append(r.width()).append("×").append(r.height());
         } else {
