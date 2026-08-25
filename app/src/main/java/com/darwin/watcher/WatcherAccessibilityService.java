@@ -135,6 +135,13 @@ public class WatcherAccessibilityService extends AccessibilityService implements
         foregroundPackage = null;
     }
 
+    /** Last non-self package seen in the foreground, or null. Used for live-view captions. */
+    public static String foregroundPackageName() {
+        WatcherAccessibilityService s = instance;
+        if (s == null || s.foregroundPackage == null) return null;
+        return s.foregroundPackage.toString();
+    }
+
     public boolean launchTarget(String packageName) {
         if (packageName == null) return false;
         try {
@@ -1262,17 +1269,43 @@ public class WatcherAccessibilityService extends AccessibilityService implements
         void onFinished();
     }
 
-    private static final class ScreenshotCallbackHandler implements AccessibilityService.TakeScreenshotCallback {
-        private final Context context;
-        private final ScreenshotDone done;
+    /** Receives a JPEG frame, or null if the capture failed. */
+    public interface FrameReady {
+        void onFrame(byte[] jpeg);
+    }
 
-        ScreenshotCallbackHandler(Context context, ScreenshotDone done) {
-            this.context = context;
-            this.done = done;
+    /**
+     * Single screenshot implementation. maxWidth <= 0 keeps the native resolution.
+     * Note the platform rate-limits AccessibilityService.takeScreenshot to roughly one
+     * call per second; callers that refresh on a timer must stay above that.
+     */
+    public void captureFrame(int maxWidth, int quality, FrameReady cb) {
+        if (Build.VERSION.SDK_INT >= 30) {
+            try {
+                takeScreenshot(Display.DEFAULT_DISPLAY, getMainExecutor(),
+                        new FrameCallbackHandler(maxWidth, quality, cb));
+                return;
+            } catch (Throwable t) {
+                android.util.Log.e("WatcherService", "takeScreenshot call failed", t);
+            }
+        }
+        if (cb != null) cb.onFrame(null);
+    }
+
+    private static final class FrameCallbackHandler implements AccessibilityService.TakeScreenshotCallback {
+        private final int maxWidth;
+        private final int quality;
+        private final FrameReady cb;
+
+        FrameCallbackHandler(int maxWidth, int quality, FrameReady cb) {
+            this.maxWidth = maxWidth;
+            this.quality = quality;
+            this.cb = cb;
         }
 
         @Override
         public void onSuccess(AccessibilityService.ScreenshotResult result) {
+            byte[] bytes = null;
             try {
                 if (Build.VERSION.SDK_INT >= 30 && result != null) {
                     Bitmap hw = Bitmap.wrapHardwareBuffer(result.getHardwareBuffer(), result.getColorSpace());
@@ -1281,42 +1314,57 @@ public class WatcherAccessibilityService extends AccessibilityService implements
                         hw.recycle();
                         result.getHardwareBuffer().close();
                         if (copy != null) {
+                            if (maxWidth > 0 && copy.getWidth() > maxWidth) {
+                                int h = (int) ((long) copy.getHeight() * maxWidth / copy.getWidth());
+                                Bitmap scaled = Bitmap.createScaledBitmap(copy, maxWidth, Math.max(1, h), true);
+                                if (scaled != null && scaled != copy) {
+                                    copy.recycle();
+                                    copy = scaled;
+                                }
+                            }
                             ByteArrayOutputStream stream = new ByteArrayOutputStream();
-                            copy.compress(Bitmap.CompressFormat.JPEG, 85, stream);
-                            byte[] bytes = stream.toByteArray();
+                            copy.compress(Bitmap.CompressFormat.JPEG, quality, stream);
+                            bytes = stream.toByteArray();
                             copy.recycle();
-
-                            TelegramNotifier.sendPhoto(context, bytes, "✅ Darwin Watcher: Task finished on " + Prefs.targetLabel(context) + "!", null);
-                            if (done != null) done.onFinished();
-                            return;
                         }
                     }
                 }
             } catch (Throwable t) {
                 android.util.Log.e("WatcherService", "Screenshot processing error", t);
             }
-            TelegramNotifier.sendDone(context);
-            if (done != null) done.onFinished();
+            if (cb != null) cb.onFrame(bytes);
         }
 
         @Override
         public void onFailure(int errorCode) {
             android.util.Log.e("WatcherService", "Screenshot failed: code " + errorCode);
-            TelegramNotifier.sendDone(context);
+            if (cb != null) cb.onFrame(null);
+        }
+    }
+
+    /** Sends the end-of-run screenshot, then reports completion either way. */
+    private static final class SendRunScreenshot implements FrameReady {
+        private final Context context;
+        private final ScreenshotDone done;
+
+        SendRunScreenshot(Context context, ScreenshotDone done) {
+            this.context = context;
+            this.done = done;
+        }
+
+        @Override
+        public void onFrame(byte[] jpeg) {
+            if (jpeg != null) {
+                TelegramNotifier.sendPhoto(context, jpeg,
+                        "✅ Darwin Watcher: Task finished on " + Prefs.targetLabel(context) + "!", null);
+            } else {
+                TelegramNotifier.sendDone(context);
+            }
             if (done != null) done.onFinished();
         }
     }
 
     public void captureScreenshotAndSend(final Context context, final ScreenshotDone done) {
-        if (Build.VERSION.SDK_INT >= 30) {
-            try {
-                takeScreenshot(Display.DEFAULT_DISPLAY, getMainExecutor(), new ScreenshotCallbackHandler(context, done));
-                return;
-            } catch (Throwable t) {
-                android.util.Log.e("WatcherService", "takeScreenshot call failed", t);
-            }
-        }
-        TelegramNotifier.sendDone(context);
-        if (done != null) done.onFinished();
+        captureFrame(0, 85, new SendRunScreenshot(context, done));
     }
 }

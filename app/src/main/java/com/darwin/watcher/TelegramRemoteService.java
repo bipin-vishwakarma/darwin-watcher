@@ -322,6 +322,9 @@ public final class TelegramRemoteService extends Service {
             Log.i(TAG, "Processing Callback Query: " + data);
             DeviceUtils.ensureAccessibilityEnabled(context);
 
+            // Live view owns every cb_lv_* action and refreshes its own frame.
+            if (LiveView.handleCallback(context, data, queryId)) return;
+
             if ("cb_run".equals(data)) {
                 TelegramNotifier.answerCallbackQuery(context, queryId, "Executing automation...");
                 triggerRemoteRun();
@@ -372,6 +375,9 @@ public final class TelegramRemoteService extends Service {
             } else if ("cb_menu".equals(data)) {
                 TelegramNotifier.answerCallbackQuery(context, queryId, "Main Menu");
                 sendMainMenu();
+            } else if ("cb_live".equals(data)) {
+                TelegramNotifier.answerCallbackQuery(context, queryId, "Starting live view");
+                LiveView.start(context);
             } else {
                 TelegramNotifier.answerCallbackQuery(context, queryId, "Command received");
             }
@@ -390,6 +396,12 @@ public final class TelegramRemoteService extends Service {
                 String devName = DeviceUtils.getDeviceModelName();
                 String osName = DeviceUtils.getShortOS();
                 TelegramNotifier.sendText(context, "🏓 *Pong!* Darwin Watcher is online & active on *" + devName + "* (" + osName + ").", getMainMenuKeyboard(), null);
+            } else if ("/live".equals(cmd)) {
+                if (parts.length > 1 && "stop".equalsIgnoreCase(parts[1])) {
+                    LiveView.stop(context, "closed");
+                } else {
+                    LiveView.start(context);
+                }
             } else if ("/status".equals(cmd)) {
                 sendStatusReport();
             } else if ("/schedules".equals(cmd)) {
@@ -730,7 +742,8 @@ public final class TelegramRemoteService extends Service {
                 "[{\"text\":\"☀️ Wake Screen\",\"callback_data\":\"cb_wake\"},{\"text\":\"🔒 Lock Screen\",\"callback_data\":\"cb_lock\"}]," +
                 "[{\"text\":\"📊 Status\",\"callback_data\":\"cb_status\"},{\"text\":\"🔄 Profiles\",\"callback_data\":\"cb_profiles\"}]," +
                 "[{\"text\":\"⏰ Schedules\",\"callback_data\":\"cb_schedules\"},{\"text\":\"🔊 Find Phone\",\"callback_data\":\"cb_ring\"}]," +
-                "[{\"text\":\"🌐 Network & Info\",\"callback_data\":\"cb_net\"},{\"text\":\"🏠 Home\",\"callback_data\":\"cb_home\"}]" +
+                "[{\"text\":\"🌐 Network & Info\",\"callback_data\":\"cb_net\"},{\"text\":\"🏠 Home\",\"callback_data\":\"cb_home\"}]," +
+                "[{\"text\":\"🖥 Live View & Control\",\"callback_data\":\"cb_live\"}]" +
             "]}";
         }
 

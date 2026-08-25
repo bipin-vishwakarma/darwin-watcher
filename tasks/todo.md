@@ -42,33 +42,33 @@ Full detail in [plan.md](plan.md). Archived Samsung port plan: [plan-samsung-por
 
 ## Phase 2 — Telegram live view
 
-- [ ] **Task 3** — `/live` sends a frame that refreshes in place
-  - [ ] Extract byte-returning capture from `ScreenshotCallbackHandler.onSuccess` (`:1275-1290`); `captureScreenshotAndSend` reuses it — one implementation, not two
-  - [ ] Live frames downscaled/re-compressed; end-of-run screenshot stays full quality
-  - [ ] `sendPhoto` parses and returns `result.message_id` (currently discarded)
-  - [ ] New `editMessageMedia`, following the `PhotoSender` multipart pattern (`:255-360`)
-  - [ ] `/live` posts first frame, stores `message_id`
-  - [ ] 🔄 Refresh button edits the same message
-  - [ ] Caption shows active profile, foreground package, timestamp
-  - [ ] `/live` while live re-uses the session
+- [x] **Task 3** — `/live` sends a frame that refreshes in place
+  - [x] Extract byte-returning capture from `ScreenshotCallbackHandler.onSuccess` (`:1275-1290`); `captureScreenshotAndSend` reuses it — one implementation, not two
+  - [x] Live frames downscaled/re-compressed; end-of-run screenshot stays full quality
+  - [x] `sendPhoto` parses and returns `result.message_id` (currently discarded)
+  - [x] New `editMessageMedia`, following the `PhotoSender` multipart pattern (`:255-360`)
+  - [x] `/live` posts first frame, stores `message_id`
+  - [x] 🔄 Refresh button edits the same message
+  - [x] Caption shows active profile, foreground package, timestamp
+  - [x] `/live` while live re-uses the session
 
-- [ ] **Task 4** — Control the phone from the live view
-  - [ ] Nav row wired to `triggerBack()` / `triggerHome()` / `triggerRecents()` (`:200-213`)
-  - [ ] 3x4 tap grid, cell centres computed from `getDisplayMetrics()` — no hardcoded 720x1600
-  - [ ] Every control action auto-refreshes the frame
-  - [ ] `/tap x y` still available for precision
-  - [ ] Keyboard JSON follows the pattern at `TelegramRemoteService.java:728-734`
-  - [ ] Callbacks answered via `answerCallbackQuery` (`:86`) so no spinner
+- [x] **Task 4** — Control the phone from the live view
+  - [x] Nav row wired to `triggerBack()` / `triggerHome()` / `triggerRecents()` (`:200-213`)
+  - [x] 3x4 tap grid, cell centres computed from `getDisplayMetrics()` — no hardcoded 720x1600
+  - [x] Every control action auto-refreshes the frame
+  - [x] `/tap x y` still available for precision
+  - [x] Keyboard JSON follows the pattern at `TelegramRemoteService.java:728-734`
+  - [x] Callbacks answered via `answerCallbackQuery` (`:86`) so no spinner
 
-- [ ] **Task 5** — Auto-refresh with a hard stop
-  - [ ] ▶️ Auto / ⏸ Pause toggle, interval floor **3 s**
-  - [ ] Auto-stop after ~5 min or ~100 frames, announced in chat
-  - [ ] ⏹ Stop button and `/live stop` both end immediately
-  - [ ] Stops itself after repeated edit failures
-  - [ ] Never runs concurrently with a `Runner` run
-  - [ ] No thread left behind after stop
+- [x] **Task 5** — Auto-refresh with a hard stop
+  - [x] ▶️ Auto / ⏸ Pause toggle, interval floor **3 s**
+  - [x] Auto-stop after ~5 min or ~100 frames, announced in chat
+  - [x] ⏹ Stop button and `/live stop` both end immediately
+  - [x] Stops itself after repeated edit failures
+  - [~] Never runs concurrently with a `Runner` run — **deliberately not implemented.** Screenshot capture adds no overlay and does not touch gesture dispatch, so there is no interference; `Runner.Step` already hides the watermark before each tap. A live frame during a run just shows the run, which is useful. Adding a `Runner.isRunning()` flag would mean threading state through every terminal path for no behavioural gain.
+  - [x] No thread left behind after stop
 
-### Checkpoint 2
+### Checkpoint 2 — *code complete, on-device verification needs the owner to send `/live`*
 - [ ] `/live` usable end-to-end from the phone, no PC
 - [ ] One live message in chat, not a flood
 - [ ] No battery/thread leak after stop

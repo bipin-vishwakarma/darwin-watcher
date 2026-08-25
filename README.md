@@ -75,6 +75,7 @@ Runs a lightweight, battery-optimized foreground listener on the device with **I
 
 #### 🕹️ Supported Commands & Features:
 - **Interactive Inline Buttons**: Zero typing required — execute tasks, capture screenshots, and switch profiles with 1 tap.
+- **`/live`** & **`/live stop`**: **Live view & control** — posts one screenshot message that is *replaced* on each refresh (never floods the chat), with a 3x4 tap grid, Back/Home/Recents, manual Refresh and an Auto toggle. See the caveat below.
 - **`/run`** & **`/run in <time>`**: Execute automation immediately or set a delayed one-off timer (*e.g., `/run in 10m` or `/run in 45s`*).
 - **`/wake`** & **`/sleep`**: Remotely wake display & dismiss keyguard or put device to sleep.
 - **`/profiles`** or **`/profile <name>`**: Interactively switch active automation profile.
@@ -252,3 +253,42 @@ Do **not** launch the target with `monkey -p <pkg> 1` — monkey injects one pse
 
 **Bipin Vishwakarma**
 - GitHub: [@bipin-vishwakarma](https://github.com/bipin-vishwakarma)
+
+---
+
+## 🖥 Live view (`/live`) — what it is and isn't
+
+`/live` is a **refreshing still image, not video.** Two hard limits make real-time
+mirroring impossible from inside the app:
+
+- `AccessibilityService.takeScreenshot` is rate-limited by the platform to roughly one
+  call per second.
+- Every frame is a fresh multipart upload to Telegram, which applies its own per-chat
+  edit rate limits.
+
+The honest ceiling is a frame every few seconds. Auto-refresh is floored at **3s**, and a
+session stops itself after **100 frames or 5 minutes** so a forgotten live view cannot
+drain the battery.
+
+**Want true real-time mirroring with full mouse and keyboard control?** Use
+[scrcpy](https://github.com/Genymobile/scrcpy) over ADB — 30-60fps, no app changes,
+and it needs nothing from this project:
+
+```bash
+scrcpy -s <device-serial>
+```
+
+That needs a PC that can reach the phone. `/live` is for when all you have is your phone.
+
+### Controls
+
+The tap grid is **coarse by design** — 12 cells over the whole screen, labelled 1-12
+row-major, with each button tapping its cell centre. Cell centres are computed from
+`getDisplayMetrics()`, so the grid adapts to any screen. For anything precise, read the
+coordinates off the live frame and use `/tap <x> <y>`.
+
+### Privacy
+
+Live frames are uploaded to your Telegram chat. Whatever is on screen goes with them.
+Live view never starts on its own — it is only ever started by `/live` or the menu
+button, and it stops itself.
