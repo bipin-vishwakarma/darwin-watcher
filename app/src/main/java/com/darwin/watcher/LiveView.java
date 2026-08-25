@@ -17,11 +17,11 @@ import java.util.ArrayList;
  * Telegram live view: one chat message whose photo is replaced on every refresh, with
  * an inline keyboard for driving the phone.
  *
- * A flat 3x4 grid over a whole screen is useless for control - on 720x1600 each cell is
- * 240x400px, far bigger than any button. So the grid is a ZOOM selector, not a tapper:
- * picking a cell narrows the view to that region and redraws, and an explicit TAP button
- * hits the crosshair at the centre of whatever is currently shown. Two levels take
- * 720x1600 down to roughly 80x133px, which is button-sized; three reach ~27x44px.
+ * A grid coarse enough to fit an inline keyboard cannot tap accurately - on 720x1600 a
+ * 4x6 grid is 180x267px per cell, still bigger than most buttons. So the grid is a ZOOM
+ * selector, not a tapper: picking a cell narrows the view to that region and redraws, and
+ * an explicit TAP button hits the crosshair at the centre of whatever is shown. One zoom
+ * reaches about 45x67px, which is button-sized; a second reaches ~11x11px.
  *
  * The grid is drawn onto the frame itself. Numbers that live only in the keyboard leave
  * the reader guessing which part of the screen each one means.
@@ -32,8 +32,17 @@ import java.util.ArrayList;
 public final class LiveView {
     private static final String TAG = "LiveView";
 
-    private static final int GRID_COLS = 3;
-    private static final int GRID_ROWS = 4;
+    /**
+     * 4x6 rather than 3x4. On 720x1600 that puts each cell at 180x267px - about one app
+     * icon - so a single zoom reaches ~45x67px and you can aim in two actions instead of
+     * three. Coarser grids look tidier and cost an extra round trip every time.
+     */
+    private static final int GRID_COLS = 4;
+    private static final int GRID_ROWS = 6;
+
+    /** Frames are rendered here, never on the main thread - see FrameHandler.onBitmap. */
+    private static final java.util.concurrent.ExecutorService RENDER =
+            java.util.concurrent.Executors.newSingleThreadExecutor();
 
     /** Width of the frame sent to Telegram. Wide enough to read, small enough to upload. */
     private static final int OUT_WIDTH = 560;
@@ -238,6 +247,11 @@ public final class LiveView {
 
         @Override
         public void onBitmap(Bitmap full) {
+            // Runs on the main thread: takeScreenshot() is handed getMainExecutor()
+            // because the end-of-run path touches WindowManager overlays. Cropping,
+            // drawing and JPEG-compressing a frame here would block the UI thread on
+            // every refresh and ANR the app, so hand off immediately and do nothing
+            // expensive on this thread.
             if (!active) {
                 if (full != null) full.recycle();
                 return;
@@ -247,6 +261,21 @@ public final class LiveView {
                 if (consecutiveErrors >= 3) stop(context, "screen capture kept failing");
                 return;
             }
+            RENDER.execute(new RenderTask(context, full));
+        }
+    }
+
+    private static final class RenderTask implements Runnable {
+        private final Context context;
+        private final Bitmap full;
+
+        RenderTask(Context context, Bitmap full) {
+            this.context = context;
+            this.full = full;
+        }
+
+        @Override
+        public void run() {
             byte[] jpeg = null;
             try {
                 jpeg = render(full);
@@ -255,6 +284,7 @@ public final class LiveView {
             } finally {
                 full.recycle();
             }
+            if (!active) return;
             if (jpeg == null) {
                 consecutiveErrors++;
                 if (consecutiveErrors >= 3) stop(context, "frame rendering kept failing");
@@ -289,7 +319,7 @@ public final class LiveView {
         for (int i = 1; i < GRID_COLS; i++) c.drawLine(i * cw, 0, i * cw, outH, line);
         for (int i = 1; i < GRID_ROWS; i++) c.drawLine(0, i * ch, outW, i * ch, line);
 
-        float textSize = Math.min(cw, ch) * 0.42f;
+        float textSize = Math.min(cw, ch) * 0.34f;
         Paint halo = new Paint(Paint.ANTI_ALIAS_FLAG);
         halo.setColor(Color.argb(150, 0, 0, 0));
         Paint num = new Paint(Paint.ANTI_ALIAS_FLAG);
