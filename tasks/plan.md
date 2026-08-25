@@ -1,264 +1,213 @@
-# Port Darwin Watcher from MIUI to Samsung One UI 8 (Android 16)
+# Fix duplicate schedule runs + add Telegram live view
 
 ## Context
 
-Darwin Watcher was built, calibrated, and provisioned for a **Xiaomi Mi 11X (MIUI, Android 13, 1080x2400)**. It now needs to run identically on a **Samsung SM-M055F / Galaxy M05 (One UI 8.0, Android 16 / API 36, 720x1600)**.
+Two requests and one bug, discovered while investigating them.
 
-The app is already installed and, contrary to expectation, most of the hard runtime plumbing already works on Android 16. The real gaps are narrower than a full port: **tap coordinates that were calibrated for a 1.5x larger screen**, **provisioning and UI affordances that only speak MIUI**, and **an unverified end-to-end run**.
+1. **Duplicate schedule runs (critical).** The 08:10 check-in fires twice, and because Darwinbox's check-in control is a toggle, the second run checks the user straight back out. Root cause found and confirmed in code — silently corrupts real attendance records. **This outranks everything else here.**
+2. **Live screen view + control over Telegram.** Remote control already exists (`/tap`, `/swipe`, `/text`, `/home`, `/back`, `/screenshot`); what's missing is seeing the screen while doing it.
+3. **Accidental touch protection — already resolved by the user**, no work needed. Details under "Resolved / out of scope".
 
-Outcome: the `test` profile drives Darwinbox correctly on this phone, the 24/7 keep-alive survives One UI's Freecess app-freezing, and `install.ps1` provisions a Samsung device as completely as it did a Xiaomi one.
-
----
-
-## Already verified working on this device — do not redo
-
-Confirmed live over ADB this session:
-
-| Item | State |
-|---|---|
-| APK install | `com.darwin.watcher`, uid 10266, pid 21846 |
-| `WRITE_SECURE_SETTINGS` | `granted=true` |
-| Accessibility service | bound; `accessibility_enabled=1`, service in `enabled_accessibility_services` |
-| `TelegramRemoteService` | **running as foreground** (`isForeground=true`, id 1002, `types=0x0`) |
-| Doze whitelist | `user,com.darwin.watcher,10266` |
-| App standby bucket | `5` = EXEMPTED (best tier) |
-| `SYSTEM_ALERT_WINDOW` | `allow` |
-| Target app | `com.darwinbox.darwinbox` installed, launches `…SplashScreenActivity` |
-| `test` profile | exists and is the **active** profile for Darwinbox |
-
-The foreground service starting cleanly on Android 16 is load-bearing luck: `targetSdkVersion` is **33**, which exempts it from the API-34+ rule requiring `android:foregroundServiceType` plus a matching `FOREGROUND_SERVICE_*` permission. `TelegramRemoteService` declares no type (`AndroidManifest.xml:87-89`). **Do not raise `targetSdkVersion` in this work** — it would break the service. Noted for a future task, not this one.
-
-`android:persistent="true"` (`AndroidManifest.xml:39`) is silently ignored for non-system apps. Harmless; not part of the keep-alive story despite appearances.
+Since installing any of this requires an uninstall + restore anyway (signature mismatch), the leftover Java fixes from the Samsung port are folded into the same build so the cost is paid once.
 
 ---
 
-## Root problems to fix
+## The duplicate-run bug
 
-1. **Coordinates.** `test` profile is `tap 357 665` / `tap 416 1073`. Screen is 720x1600, Mi 11X was 1080x2400 — exactly 1.5x. Both numbers are *in range* for either screen, so prefs alone can't tell us if they're stale. Must be settled empirically.
-2. **`install.ps1` is MIUI-only.** Its three keep-alive appops (`10008` autostart, `10021` lockscreen, `10022` background popups) do not exist on One UI and failed silently. Worse, every `pm grant`/`appops`/`settings` call uses bare `& $Adb` with no `-s $DeviceAddress` (`install.ps1:34-56`) while install and launch do use it — wrong device gets provisioned when two are attached. All errors are swallowed by `2>$null`, so the script printed "provisioned successfully!" while doing nothing.
-3. **Samsung Freecess actively freezes apps.** Logcat this session: `FreecessHandler: freeze com.darwinbox.darwinbox(10314) result : 2`, repeatedly. If it freezes the *target*, cold-start is unreliable; if it freezes the watcher, the listener dies.
-4. **Hardcoded MIUI package.** `Prefs.targetPackage()` defaults to `com.miui.calculator` (`Prefs.java:66`), and `MainActivity.java:736-744` hardcodes it in the app-picker. Samsung's is `com.sec.android.app.popupcalculator`. Current prefs point at Darwinbox so this isn't blocking today, but any profile reset lands on a nonexistent app.
-5. **MIUI-only UI dead-ends.** The "Xiaomi / MIUI 24/7 Keep-Alive Guide" button (`MainActivity.java:968-971`) and `openMiuiAutostart()` (`MainActivity.java:1186-1189`) target `com.miui.securitycenter`, absent on Samsung — the button does nothing. `DeviceUtils.getDeviceModelName()` (`DeviceUtils.java:100-105`) maps only Xiaomi codenames; this phone reports the raw "Samsung SM-M055F".
-6. **No end-to-end proof.** No automated test suite exists in this repo — "tests" here means a device verification matrix, defined in Phase 5.
+**Where:** `Runner.scheduleItem()`, `Runner.java:131-162`, specifically the rollover guard at `:146-149`.
+
+```java
+Calendar when = Calendar.getInstance();      // <- TODAY at item.hour:item.minute
+...
+int randomOffsetSec = (int)((Math.random() * (rangeSec*2)) - rangeSec);   // fresh jitter every call
+long triggerTime = when.getTimeInMillis() + jitterMillis;
+if (triggerTime <= now) {                    // <- only rolls forward if ALREADY past
+    when.add(Calendar.DAY_OF_MONTH, 1);
+}
+```
+
+**Sequence:**
+1. Alarm fires at 08:05 (jitter −5 on a 08:10 ±5 schedule).
+2. `AlarmReceiver.java:63` calls `Runner.scheduleItem(app, item)` to re-arm.
+3. `when` is rebuilt as **today** 08:10; a **new** jitter is rolled, say +5 → 08:15.
+4. `08:15 <= 08:05` is false, so the day is never advanced.
+5. Alarm re-arms for **today 08:15** → the schedule runs a second time.
+
+Triggered whenever the new jitter lands later than the elapsed old one — about a coin flip at ±5 min, and it can chain until a roll finally lands in the past.
+
+**Why it matters:** `id/checkInShortcut` on the Darwinbox dashboard is a single toggle (`[32,432][688,570]`, labelled "Check Out" once checked in). Run number two hits the same control and reverses run number one.
+
+**Second path to the same fault:** `AlarmReceiver.java:30-40` re-arms every enabled schedule on `BOOT_COMPLETED`, with no memory of what already ran. A reboot at 08:07 re-arms today 08:1x and fires again.
+
+**Chosen fix — per-schedule `lastRunDate`.** Record the date (`yyyy-MM-dd`) a schedule last actually ran; refuse to run or re-arm for a date already used. This covers the re-arm cascade, the reboot path, and any duplicate alarm delivery from the OS, in one mechanism.
+
+Rejected: passing an `afterFire` boolean into `scheduleItem` to force tomorrow. Fewer lines, but it fixes only path one — the reboot and duplicate-delivery paths stay open.
 
 ---
 
-## Hard safety constraint
+## Phase 0 — Safety net
 
-The `Darwin` profile performs the **real Darwinbox attendance punch**. Every step below uses the **`test` profile only**.
-
-`AlarmReceiver.java:57-62` is the trap: a firing schedule calls `Prefs.setTargetApp` *and* `Prefs.setCurrentProfile(app, item.profile)`, so a scheduled run silently switches the active profile to `Darwin` and punches attendance. Both live schedules (08:10 check-in, 17:30 check-out, Mon–Sat, ±5min) match today. **Task 1 disables them first** and Task 11 restores them.
-
-Before any run that dispatches taps, re-assert `current_profile_com_darwinbox_darwinbox = test`.
-
-Also: `Runner.parse()` (`Runner.java:283-288`) rejects action text containing any of ~30 risky words (`checkin`, `attendance`, `login`, `otp`, …). Keep profile action text to bare `tap`/`wait`/`swipe` lines — no descriptive comments, they will throw.
-
----
-
-## Phase 0 — Safety net and baseline
-
-### Task 1: Disarm production schedules, arm test instrumentation
-**Description:** Back up device prefs, disable both `Darwin` schedules, enable Telegram screenshot-on-completion, confirm `test` is active.
+### Task 1: Snapshot device state before any install
+**Description:** Capture prefs and current alarm state so the uninstall is reversible.
 
 **Acceptance criteria:**
-- [ ] `darwin_watcher.xml` copied to a local backup file before any change
-- [ ] Both schedules show `"enabled":false`; no pending Darwin alarms remain
-- [ ] `telegram_enabled=true`, `current_profile_com_darwinbox_darwinbox=test`
+- [ ] `shared_prefs/darwin_watcher.xml` pulled to the session scratchpad (**never the repo** — it holds the live bot token)
+- [ ] Current armed alarms and their next-fire times recorded, so post-restore state can be diffed
+- [ ] Both `Darwin` schedules confirmed `enabled:true` before the change
 
-**Verification:** re-dump prefs via `run-as com.darwin.watcher cat …/shared_prefs/darwin_watcher.xml`; `adb shell dumpsys alarm | grep darwin` shows only the 15-min heartbeat (req code 8888), no schedule alarms.
+**Verification:** backup file is non-empty and contains `telegram_token`, both schedule entries, and all profile action strings.
 
-**Dependencies:** None. **Scope:** XS (device state only, no repo files).
-
-Do this through the **app UI** (Schedules tab toggles, Settings tab toggle), not by editing the prefs XML — editing prefs behind a running process gets overwritten on next `apply()`.
-
-### Checkpoint 0
-- [ ] Prefs backup exists locally
-- [ ] Zero schedule alarms armed; heartbeat still armed
-- [ ] Confirmed with the user before dispatching the first tap
+**Dependencies:** None. **Scope:** XS.
 
 ---
 
-## Phase 1 — Coordinate truth (the actual blocker)
+## Phase 1 — Stop the double run (highest priority)
 
-### Task 2: Derive real Darwinbox tap targets on this screen
-**Description:** Launch Darwinbox, dump the UI hierarchy, read actual node bounds for the two elements the `test` profile means to hit, and compare against 357,665 / 416,1073.
+### Task 2: A schedule runs at most once per active day
+**Description:** Add `lastRunDate` per schedule and enforce it at both the run gate and the re-arm.
 
-**Acceptance criteria:**
-- [ ] `uiautomator dump` captured for the Darwinbox screen(s) the test profile traverses
-- [ ] Written mapping: intended element → actual bounds → center px on 720x1600
-- [ ] Explicit verdict per tap: correct as-is, or replace with X,Y
-- [ ] `wm size` and both densities (300 physical / 320 override) recorded alongside, so the numbers are reproducible
-
-**Verification:** overlay the two existing coords onto the dumped bounds; a coord inside the intended node's rect passes, outside fails. Capture `adb exec-out screencap` for the record.
-
-**Dependencies:** Task 1. **Scope:** S (no repo files; produces `tasks/coords.md`).
-
-Prediction to test, not assume: 1.5x downscale gives 238,443 and 277,715. Do not apply it blindly — density differs (300 vs 320 override), so the Darwinbox layout may not scale linearly.
-
-### Task 3: Fix the test profile and prove one clean end-to-end run
-**Description:** If Task 2 says the coords miss, update the `test` profile actions in the app UI. Then run via Run Now and verify every stage.
+**Files:** `Prefs.java`, `AlarmReceiver.java`, `Runner.java`
 
 **Acceptance criteria:**
-- [ ] Both taps land inside their intended Darwinbox elements
-- [ ] Full pipeline observed: warmup countdown → each step → clean screenshot → auto-sleep/lock
-- [ ] Screenshot arrives in Telegram
-- [ ] `last_run_status` ends at `Task done` (not `Stopped: …`)
+- [ ] `Prefs` gains `scheduleLastRunDate(context, id)` / `setScheduleLastRunDate(context, id, date)`, keyed per schedule id, stored as `yyyy-MM-dd` in device-local time
+- [ ] `AlarmReceiver` skips the run when `lastRunDate == today`, but still re-arms the next occurrence and still runs the heartbeat/self-heal steps
+- [ ] `lastRunDate` is stamped at dispatch, before `Runner.run()`, so a crash mid-run cannot cause a repeat
+- [ ] `Runner.scheduleItem()` never arms a trigger falling on a date already recorded as run — advance a day *before* the existing day-of-week loop at `Runner.java:152-157`
+- [ ] Manual paths stay unaffected: `isTest` broadcasts and the UI Run Now button bypass the date gate entirely
+- [ ] Saving a schedule from the UI for later the same day still arms today (only the fired/boot paths force forward)
+- [ ] Jitter still applies to the next day's occurrence
 
-**Verification:** run with `adb logcat -s WatcherService DeviceUtils TelegramRemoteService` streaming; compare the delivered screenshot against the expected post-tap Darwinbox screen.
+**Verification:**
+- Create a throwaway `test`-profile schedule with a ±5 min window, timed 1–2 min out, and let it fire. Observe **exactly one** run.
+- Immediately read `dumpsys alarm | grep -B1 -A3 'Alarm{.*com.darwin.watcher'`, convert `origWhen` to a date, and confirm the re-armed occurrence is **tomorrow**, not later today. This is the exact assertion that fails on today's build.
+- Reboot within the schedule's jitter window and confirm no run fires and the alarm still points at tomorrow.
+- Fire `am broadcast -n com.darwin.watcher/.AlarmReceiver --ez isTest true` twice in a row and confirm both run — the gate must not block manual runs.
 
-**Dependencies:** Task 2. **Scope:** S.
-
-Verify through the **app's own accessibility gestures** (Run Now / `/run`), never `adb shell input tap` — `input tap` bypasses the exact `dispatchGesture` path that must be proven, and Samsung applies different touch filtering to injected vs accessibility events.
+**Dependencies:** None. **Scope:** S (3 files, small edits).
 
 ### Checkpoint 1
-- [ ] One clean end-to-end `test` run, screenshot as evidence
-- [ ] Coordinate decision recorded in `tasks/coords.md`
-- [ ] **Review with user before proceeding** — this is the point where "does it work at all" is settled
+- [ ] Exactly-once proven by observation, with the re-armed alarm dated tomorrow
+- [ ] Manual runs still work
+- [ ] **This alone is worth shipping** — if anything later goes wrong, this fix must survive
 
 ---
 
-## Phase 2 — Samsung provisioning parity
+## Phase 2 — Telegram live view
 
-### Task 4: Make `install.ps1` device-aware and honest
-**Description:** Branch on `ro.product.manufacturer`, run only applicable keep-alive commands, and report per-command PASS/FAIL instead of swallowing errors.
+Each task below is independently useful and independently verifiable; ship them in order.
 
-**Acceptance criteria:**
-- [ ] Reads `ro.product.manufacturer` / `ro.build.version.sdk` and picks a Samsung or Xiaomi branch
-- [ ] Every `pm grant` / `appops` / `settings` call passes `-s $DeviceAddress` when one was supplied (fixes the wrong-device bug)
-- [ ] Per-command PASS/FAIL printed; `2>$null` blanket suppression removed
-- [ ] Samsung branch adds `cmd package set-standby-bucket com.darwin.watcher active` and best-effort `cmd appops set … SYSTEM_EXEMPT_FROM_POWER_RESTRICTIONS allow` (API 34+; report FAIL without aborting)
-- [ ] MIUI appops `10008/10021/10022` run only on Xiaomi
-- [ ] Prints the Samsung manual checklist that ADB genuinely cannot cover (below)
-- [ ] Re-running on this phone reports all-PASS and changes no working state
+### Task 3: `/live` sends a frame that refreshes in place
+**Description:** New live mode that posts one screenshot and updates that same message instead of flooding the chat.
 
-**Verification:** run the script, confirm every line PASSes; re-check `am get-standby-bucket` (expect exempted/active), doze whitelist, and `dumpsys package … granted=true` afterwards.
-
-**Dependencies:** None (parallel with Phase 1). **Files:** `install.ps1`. **Scope:** S.
-
-The Samsung manual checklist — no reliable ADB equivalent exists, so the script must print it rather than pretend:
-- Settings → Battery → Background usage limits → **Never sleeping apps** → add Darwin Watcher
-- Same screen → **Put unused apps to sleep**: OFF
-- Settings → Battery → **Optimise battery usage** → Darwin Watcher: not optimised
-- Developer options → **USB debugging (Security settings)**: ON (required for `pm grant WRITE_SECURE_SETTINGS` after a factory reset)
-
-### Task 5: Device-aware model naming and OEM detection
-**Description:** Add `isSamsung()` / `isXiaomi()` helpers to `DeviceUtils` and map this phone's codename to its market name.
+**Files:** `WatcherAccessibilityService.java`, `TelegramNotifier.java`, `TelegramRemoteService.java`
 
 **Acceptance criteria:**
-- [ ] `SM-M055F` renders as `Samsung Galaxy M05`, not `Samsung SM-M055F`
-- [ ] Existing Xiaomi mappings (`M2012K11AI`, `alioth`) still resolve unchanged
-- [ ] OEM helpers exported for `MainActivity` to consume in Task 6
+- [ ] `WatcherAccessibilityService` exposes a capture that hands back `byte[]` instead of sending directly. Extract it from the existing `ScreenshotCallbackHandler.onSuccess` (`:1275-1290`) — it already produces JPEG bytes at quality 85 — and make `captureScreenshotAndSend` call the same path so there is one capture implementation, not two
+- [ ] Frames are downscaled and re-compressed for live use (a full 720x1600 JPEG per refresh is needlessly slow over mobile data); full quality stays for the end-of-run screenshot
+- [ ] `TelegramNotifier.sendPhoto` parses `result.message_id` out of the API response and hands it back — currently the response is discarded
+- [ ] New `TelegramNotifier.editMessageMedia(context, messageId, bytes, caption, replyMarkupJson)` following the existing multipart pattern in `PhotoSender` (`:255-360`)
+- [ ] `/live` posts the first frame and stores its `message_id` in live-session state
+- [ ] A **🔄 Refresh** inline button re-captures and edits the same message
+- [ ] Caption carries useful state: active profile, foreground package, timestamp
+- [ ] `/live` while already live re-uses the existing session rather than starting a second one
 
-**Verification:** `/status` and `/net` over Telegram show the corrected name; Dashboard header matches.
+**Verification:** send `/live`, confirm a single chat message appears and Refresh updates that message in place with no new messages. Cross-check the frame against `adb exec-out screencap`.
 
-**Dependencies:** None. **Files:** `DeviceUtils.java`. **Scope:** XS.
+**Dependencies:** Task 1. **Scope:** M.
 
-### Task 6: Replace MIUI-only UI dead-ends
-**Description:** Make the keep-alive guide and autostart button branch by OEM, and stop hardcoding `com.miui.calculator`.
+### Task 4: Control the phone from the live view
+**Description:** Inline keyboard so the screen can be driven without typing coordinates.
+
+**Files:** `TelegramRemoteService.java`
 
 **Acceptance criteria:**
-- [ ] On Samsung the guide shows the One UI checklist from Task 4; on Xiaomi it shows today's MIUI text verbatim
-- [ ] The autostart button opens a screen that **exists** on Samsung (Device Care / battery settings), with a graceful fallback to app-details when the intent won't resolve — never a dead tap
-- [ ] `Prefs.targetPackage()` default resolves an installed calculator at runtime instead of returning a hardcoded MIUI package; falls back safely when none is found
-- [ ] App-picker lists the calculator actually present on the device
-- [ ] Existing prefs pointing at Darwinbox are untouched by the default change
+- [ ] Navigation row wired to existing helpers: `triggerBack()`, `triggerHome()`, `triggerRecents()` (`WatcherAccessibilityService.java:200-213`)
+- [ ] A coarse tap grid (3 columns x 4 rows over the screen) whose buttons dispatch `service.tap(x, y, null)` at each cell centre, computed from `getResources().getDisplayMetrics()` so it works on any resolution — do not hardcode 720x1600
+- [ ] Every control action auto-refreshes the frame afterwards, so the result is visible without a second tap
+- [ ] Precise taps still available via the existing `/tap x y`, using the live image to read coordinates
+- [ ] Keyboard JSON built following the existing pattern at `TelegramRemoteService.java:728-734`
+- [ ] Callback handlers answer the callback query so Telegram stops showing a spinner — reuse `TelegramNotifier.answerCallbackQuery` (`:86`)
 
-**Verification:** tap both buttons on-device, confirm the target screen opens; clear-data on a scratch profile and confirm the default target resolves to `com.sec.android.app.popupcalculator`, not a missing package.
+**Verification:** from the chat, drive Darwinbox: Home → tap the Attendance cell → confirm the refreshed frame shows `AttendanceHomeActivity`. Confirm `dumpsys activity activities` agrees.
 
-**Dependencies:** Task 5. **Files:** `MainActivity.java`, `Prefs.java`. **Scope:** M.
+**Dependencies:** Task 3. **Scope:** M.
 
-Reuse what exists: `MainActivity` already guards overlay state via `Settings.canDrawOverlays` (`:393`, `:1363`) — follow that same try/fallback shape for the new intents rather than inventing a pattern.
+### Task 5: Auto-refresh with a hard stop
+**Description:** Hands-free refresh, bounded so a forgotten session cannot drain the battery.
+
+**Files:** `TelegramRemoteService.java`
+
+**Acceptance criteria:**
+- [ ] **▶️ Auto / ⏸ Pause** toggle; refresh interval no faster than **3 s** (the accessibility screenshot API is rate-limited to ~1/s, and Telegram edits are rate-limited per chat)
+- [ ] Session auto-stops after a cap (~5 min or ~100 frames) and says so in the chat
+- [ ] **⏹ Stop** button and `/live stop` both end it immediately
+- [ ] Auto-refresh stops on its own if the Telegram edit fails repeatedly, rather than looping on errors
+- [ ] Live mode never runs concurrently with an automation run — a `Runner` run takes precedence and pauses live refresh
+- [ ] Runs on the existing poller thread pattern; no new always-on thread left behind after stop
+
+**Verification:** start auto, leave it 6 minutes, confirm it self-stops with a message and no further edits. Confirm no lingering thread via `dumpsys activity services com.darwin.watcher`.
+
+**Dependencies:** Task 4. **Scope:** S.
 
 ### Checkpoint 2
-- [ ] `build.ps1` succeeds; `apksigner verify` passes
-- [ ] Reinstall keeps accessibility bound and the FGS running (`types=0x0`, still allowed at targetSdk 33)
-- [ ] Task 3's end-to-end run still passes after the rebuild
+- [ ] `/live` usable end-to-end from the phone with no PC
+- [ ] Chat contains one live message, not a flood
+- [ ] No battery/thread leak after stop
 
 ---
 
-## Phase 3 — Keep-alive endurance under Freecess
+## Phase 3 — Folded-in Samsung port leftovers
 
-### Task 7: Prove the 24/7 shield survives One UI
-**Description:** Confirm Freecess does not freeze `com.darwin.watcher`, and that the 15-minute watchdog heartbeat actually fires on this OS.
+These were deferred last session solely because they needed a rebuild. The rebuild is happening anyway.
+
+### Task 6: Device-aware naming and no MIUI dead-ends
+**Description:** Carry over the unfinished Tasks 5-6 from `tasks/plan-samsung-port.md`.
+
+**Files:** `DeviceUtils.java`, `MainActivity.java`, `Prefs.java`
 
 **Acceptance criteria:**
-- [ ] Heartbeat observed firing at least twice while the device sits idle and screen-off (spans ≥30 min)
-- [ ] No `FreecessHandler: freeze com.darwin.watcher` in logcat across the idle window
-- [ ] `TelegramRemoteService` still `isForeground=true` afterwards; PARTIAL_WAKE_LOCK still held
-- [ ] A Telegram command answers immediately after the idle window with no warm-up delay
-- [ ] Self-heal proven: clear `enabled_accessibility_services`, confirm `DeviceUtils.ensureAccessibilityEnabled` rewrites it on the next heartbeat
+- [ ] `SM-M055F` renders as `Samsung Galaxy M05`; existing Xiaomi codename mappings (`DeviceUtils.java:100-105`) unchanged
+- [ ] `isSamsung()` / `isXiaomi()` helpers on `DeviceUtils`
+- [ ] The "Xiaomi / MIUI 24/7 Keep-Alive Guide" button (`MainActivity.java:968-971`) shows the One UI checklist on Samsung; `openMiuiAutostart()` (`:1186-1189`) opens a screen that exists on Samsung, with a fallback to app-details so it is never a dead tap
+- [ ] `Prefs.targetPackage()` (`Prefs.java:66`) resolves an installed calculator at runtime instead of hardcoding `com.miui.calculator`; existing Darwinbox prefs untouched
 
-**Verification:** `dumpsys alarm | grep darwin` before/after to see the heartbeat re-arm; `dumpsys activity services` for FGS state; grep the idle-window logcat for `Freecess`.
+**Verification:** tap both buttons on-device and confirm a real screen opens; confirm the dashboard header reads `Galaxy M05`.
 
-**Dependencies:** Checkpoint 2. **Scope:** S (device only).
-
-The wake lock is acquired with a **10-minute timeout** (`TelegramRemoteService.java:87`) and, from the code read, is not visibly re-acquired on a timer — the 15-min heartbeat lands *after* it lapses. If the idle test shows the listener going deaf, that gap is the first suspect. Diagnose during this task; fix only if the test fails, and treat the fix as its own task.
+**Dependencies:** None. **Scope:** M.
 
 ---
 
-## Phase 4 — Full functional matrix
+## Phase 4 — Build, install, restore
 
-### Task 8: Telegram remote command suite
-**Description:** Exercise every remote command, `test` profile only.
-
-**Acceptance criteria:** each responds correctly — `/menu` (inline keyboard renders), `/status`, `/net` (SSID + IPv4 + RSSI + RAM + storage), `/wake`, `/sleep`, `/home`, `/back`, `/recents`, `/notifications`, `/screenshot`, `/tap`, `/swipe`, `/ring` + `/stopring`, `/profiles`, `/run`, `/run in 60s`.
-- [ ] Every command verified; failures logged with the exact reply received
-- [ ] `/profiles` never leaves `Darwin` selected — reselect `test` if switched
-- [ ] `/ring` reaches full volume and `/stopring` actually silences it
-
-**Verification:** run each from the Telegram chat, capture replies; cross-check `/net` values against `adb shell dumpsys wifi` and `df`.
-
-**Dependencies:** Checkpoint 2. **Scope:** S.
-
-### Task 9: Locked-phone cold start
-**Description:** The scenario the whole app exists for — screen off, keyguard on, remote `/run`.
+### Task 7: Rebuild and reinstall without losing configuration
+**Description:** The uninstall is unavoidable — `build.ps1` signs with a generated keystore (`d8d94a0b…`) that does not match the installed APK's signer (`b1770bfb…`), so `install -r` is refused.
 
 **Acceptance criteria:**
-- [ ] Screen wakes, keyguard dismissed via the swipe gesture (`WatcherAccessibilityService:161-191`, already resolution-relative — verify, don't change)
-- [ ] Darwinbox cold-starts fresh, 4s warmup overlay counts down
-- [ ] Taps land; **no phantom taps on the lock screen**
-- [ ] Clean screenshot (no watermark) delivered, then app closed and device re-locked
+- [ ] `build.ps1` succeeds; `apksigner verify` passes; `targetSdkVersion` still **33** (raising it breaks `TelegramRemoteService`, which declares no `foregroundServiceType`)
+- [ ] Fresh prefs snapshot taken immediately before uninstall, in addition to Task 1's
+- [ ] `adb uninstall com.darwin.watcher`, install the new APK, restore prefs via the `run-as` path, then run `install.ps1` for provisioning
+- [ ] Post-restore diff against the backup shows only intended differences
+- [ ] Both `Darwin` schedules re-armed at the correct next-fire times; profiles, Telegram token and chat id all present
+- [ ] Accessibility bound, `TelegramRemoteService` foreground, doze whitelist and standby bucket restored (`install.ps1` reports all-PASS)
 
-**Verification:** `adb exec-out screencap` at each stage plus the delivered Telegram screenshot; confirm `input` events only after keyguard clears.
+**Verification:** `install.ps1` all-PASS; `dumpsys alarm` shows both schedules plus heartbeat; one `isTest` broadcast completes end-to-end with a screenshot delivered.
 
-**Dependencies:** Task 3, Task 8. **Scope:** S.
-
-If Freecess froze Darwinbox (seen this session), cold start may need a retry — `Runner.WaitForTarget` already re-opens at tries 2/5/8 with a 25-try ceiling (`Runner.java:377-388`). Record how many tries it actually took; that number is the regression baseline.
-
-### Task 10: Boot persistence
-**Description:** Reboot and confirm everything self-restores.
-
-**Acceptance criteria:**
-- [ ] After reboot: accessibility still enabled, FGS running, heartbeat re-armed
-- [ ] Schedule alarms re-register from `BOOT_COMPLETED` (`AlarmReceiver.java:30-40`)
-- [ ] A Telegram command works without opening the app first
-
-**Verification:** `adb reboot`, wait for boot, then `dumpsys alarm`/`dumpsys activity services`/`settings get secure enabled_accessibility_services`, and one Telegram round-trip.
-
-**Dependencies:** Task 7. **Scope:** XS.
-
-Task 10 needs at least one schedule armed to prove re-registration. Use a **throwaway `test`-profile schedule** a few minutes out — do not re-enable the `Darwin` ones for this.
+**Dependencies:** Tasks 2, 5, 6. **Scope:** S (device work, no repo files).
 
 ### Checkpoint 3
-- [ ] Full matrix result table written to `tasks/test-results.md`, each row pass/fail with evidence
-- [ ] Any failure either fixed or explicitly logged as a known limitation
+- [ ] Nothing lost — user re-enters no configuration
+- [ ] Duplicate-run fix verified on the installed build, not just the dev machine
+- [ ] Both features exercised once on-device
 
 ---
 
-## Phase 5 — Restore and hand back
+## Resolved / out of scope
 
-### Task 11: Re-arm production and finalize
-**Acceptance criteria:**
-- [ ] Throwaway test schedule deleted
-- [ ] Both `Darwin` schedules re-enabled with original times/days/tolerance, matching the Task 1 backup
-- [ ] `dumpsys alarm` shows both armed at the right next-fire times
-- [ ] Active profile deliberately set to whichever the user wants day-to-day (ask — `Darwin` for real punches, `test` if they want it idle)
-- [ ] Final APK rebuilt and installed; `git status` reviewed and changes committed
-- [ ] `README.md` gains a short Samsung/One UI provisioning section
+**Accidental touch protection — fixed by the user in Settings, no code needed.** For the record, this is Samsung pocket mode: `settings system screen_off_pocket=1` (also `proximity_sensor=1`), driven by `com.samsung.android.gesture.PocketProximityManager` against the `SIP3510_Proximity` sensor. Disabling it does not weaken touch — the feature exists to *block* touch when the sensor is covered, so switching it off makes automation more reliable, at the cost of possible pocket-dials.
 
-**Verification:** diff live prefs against the Task 1 backup — only intended fields differ.
+**Vibration to clear an obstruction — not built, because it would not work.** A phone's vibration motor produces roughly a millimetre of buzz; it will not shake an object off the screen or move the phone out from under something. The honest version of the idea is vibration as an *alert* ("come clear the phone"), which is only worth adding if pocket mode is ever re-enabled. Flagged here rather than silently dropped — say so if you want it anyway.
 
-**Dependencies:** Checkpoint 3. **Scope:** S.
+**Real-time video (MediaProjection + local HTTP server).** Rejected for now: the accessibility screenshot path caps at ~1 fps, so genuine video means MediaProjection, which needs a consent dialog every session, plus a hand-written HTTP server since the build vendors no libraries. Large effort for a capability `scrcpy` already provides whenever a PC is available.
 
 ---
 
@@ -266,25 +215,31 @@ Task 10 needs at least one schedule armed to prove re-registration. Use a **thro
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| Accidentally running `Darwin` profile → false attendance punch in a real HR system | **High** | Schedules disabled in Task 1; assert `current_profile=test` before every run; never call `/profile Darwin` |
-| Coords assumed rather than measured | High | Task 2 gates Task 3; verdict must cite dumped node bounds |
-| Freecess freezes watcher or target | Med | Task 7 idle test; standby bucket + doze already exempt; manual "never sleeping apps" in checklist |
-| Rebuild breaks the FGS by bumping targetSdk | Med | `targetSdkVersion` stays 33 this whole plan; Checkpoint 2 re-verifies `isForeground=true` |
-| Re-signing breaks `install -r` | Med | Local debug keystore differs from the committed APK's — uninstall/reinstall if signature mismatch appears |
-| `2>$null` masks a provisioning failure again | Med | Task 4 replaces it with explicit PASS/FAIL |
-| Screenshot rate limit (1/sec) on repeated `/screenshot` | Low | Space calls ≥1s in Task 8 |
-| Editing prefs XML under a live process | Low | All config changes go through the app UI |
-
-## Note, outside scope
-
-The Telegram bot token sits in plaintext in `shared_prefs/darwin_watcher.xml`, readable by ADB/backup tooling. Not part of this port and I'm not changing it — but if that phone is ever shared or handed on, rotate the token via `@BotFather`.
+| Uninstall loses schedules, profiles, bot token | **High** | Two snapshots (Task 1 and Task 7); restore path already proven repeatedly; post-restore diff against backup |
+| Duplicate-run fix wrong → schedule stops firing entirely | **High** | Verify with a throwaway schedule *and* confirm the re-armed alarm is dated tomorrow; never test on the `Darwin` profile |
+| `/live` streams whatever is on screen into a Telegram chat | Med | Document it; live mode never auto-starts; it is user-initiated and self-stopping |
+| Telegram edit rate limits during auto-refresh | Med | Floor the interval at 3 s; stop after repeated edit failures |
+| Battery drain from a forgotten live session | Med | Hard cap on frames/duration with a chat notice |
+| Raising `targetSdk` during the rebuild breaks the 24/7 listener | Med | Stays at 33; Checkpoint 3 re-verifies `isForeground=true` |
+| Testing accidentally runs the `Darwin` profile and punches attendance | **High** | All testing on the `test` profile; assert active profile before any run; `checkInShortcut` is at `[32,432][688,570]` — never tap there |
 
 ## Verification summary
 
-- **Build:** `powershell -ExecutionPolicy Bypass -File .\build.ps1` — aapt2 → javac → d8 → zipalign → `apksigner verify`
-- **Provision:** `powershell -ExecutionPolicy Bypass -File .\install.ps1` — expect all-PASS on Samsung
-- **Runtime state:** `dumpsys activity services com.darwin.watcher`, `dumpsys alarm | grep darwin`, `am get-standby-bucket`, `settings get secure enabled_accessibility_services`
-- **Behavioral:** the Phase 4 matrix, `test` profile only, evidence in `tasks/test-results.md`
-- **No automated suite exists** in this repo, and this plan does not add one — device verification is the test bed. Say so plainly in the results file.
+```powershell
+# Build and install
+powershell -ExecutionPolicy Bypass -File .\build.ps1
+adb uninstall com.darwin.watcher
+adb install -r .\build\darwin-watcher-debug.apk
+powershell -ExecutionPolicy Bypass -File .\install.ps1
 
-First action on approval: create `tasks/plan.md` (this document) and `tasks/todo.md` (the checklist), since plan mode blocked writing them.
+# The assertion that fails on today's build: next occurrence must be TOMORROW
+adb shell "dumpsys alarm | grep -B1 -A3 'Alarm{.*com.darwin.watcher'"
+
+# Manual run must still work despite the once-per-day gate
+adb shell "am broadcast -n com.darwin.watcher/.AlarmReceiver --ez isTest true"
+adb shell "dumpsys activity activities | grep topResumedActivity"
+```
+
+No automated test suite exists in this repo and this plan does not add one; device verification is the test bed. Results go in `tasks/test-results.md`.
+
+**Note on plan files:** `tasks/plan.md` and `tasks/todo.md` currently hold the Samsung port plan (committed in PR #1). The port plan will be archived to `tasks/plan-samsung-port.md` — with its still-open items carried into Phase 3 above — so nothing is lost when the new plan takes those filenames.

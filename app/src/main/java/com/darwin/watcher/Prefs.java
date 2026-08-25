@@ -311,6 +311,45 @@ public final class Prefs {
         }
     }
 
+    private static final String SCHEDULE_LAST_RUN = "schedule_last_run_";
+
+    /** Local calendar date as yyyy-MM-dd. Used to enforce one run per schedule per day. */
+    public static String dateStamp(java.util.Calendar cal) {
+        if (cal == null) return "";
+        return String.format(java.util.Locale.US, "%04d-%02d-%02d",
+                cal.get(java.util.Calendar.YEAR),
+                cal.get(java.util.Calendar.MONTH) + 1,
+                cal.get(java.util.Calendar.DAY_OF_MONTH));
+    }
+
+    public static String todayStamp() {
+        return dateStamp(java.util.Calendar.getInstance());
+    }
+
+    public static String scheduleLastRunDate(Context context, String id) {
+        if (id == null) return "";
+        return prefs(context).getString(SCHEDULE_LAST_RUN + id, "");
+    }
+
+    /**
+     * Stamped immediately before a scheduled run is dispatched. commit() rather than
+     * apply() on purpose: if the process dies mid-run, an async write could be lost and
+     * the schedule would be free to fire again the same day.
+     */
+    public static void setScheduleLastRunDate(Context context, String id, String date) {
+        if (id == null) return;
+        prefs(context).edit().putString(SCHEDULE_LAST_RUN + id, date == null ? "" : date).commit();
+    }
+
+    public static void clearScheduleLastRunDate(Context context, String id) {
+        if (id == null) return;
+        prefs(context).edit().remove(SCHEDULE_LAST_RUN + id).apply();
+    }
+
+    public static boolean scheduleAlreadyRanToday(Context context, String id) {
+        return id != null && todayStamp().equals(scheduleLastRunDate(context, id));
+    }
+
     public static java.util.ArrayList<ScheduleItem> getSchedules(Context context) {
         java.util.ArrayList<ScheduleItem> list = new java.util.ArrayList<ScheduleItem>();
         String json = prefs(context).getString(KEY_SCHEDULES, "");
@@ -343,6 +382,10 @@ public final class Prefs {
 
     public static void saveSchedule(Context context, ScheduleItem item) {
         if (item == null) return;
+        // An explicit edit means "re-arm as specified" - forget that it already ran today,
+        // otherwise moving a schedule to a later time on the same day would silently
+        // defer it to tomorrow. Only ever called from the UI, never from the fire path.
+        clearScheduleLastRunDate(context, item.id);
         java.util.ArrayList<ScheduleItem> list = getSchedules(context);
         boolean updated = false;
         for (int i = 0; i < list.size(); i++) {

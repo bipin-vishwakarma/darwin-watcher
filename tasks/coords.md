@@ -86,3 +86,28 @@ Expected activity trace: `DashboardActivity` → `AttendanceHomeActivity` → `M
 3. `adb shell uiautomator dump`, pull it, and read `clickable='true'` node bounds. Tap the geometric center.
 4. Confirm every candidate target by tapping it once and checking `topResumedActivity` before putting it in a profile.
 5. Screen 2 scrolls — re-dump at scroll-top if the button y-values look shifted.
+
+---
+
+## Re-check 2026-08-25
+
+Dashboard bounds re-dumped and compared against the 2026-08-17 measurements: **identical**.
+
+| Element | 2026-08-17 | 2026-08-25 |
+|---|---|---|
+| `id/checkInShortcut` | `[32,432][688,570]` | `[32,432][688,570]` — unchanged |
+| Tile grid (3 cols x 240px) | `[240,596][480,864]` etc. | unchanged |
+
+The production `Darwin` profile taps `365,450`, inside `checkInShortcut` — still correct.
+
+**What did change:** tapping the Attendance tile now lands on
+`com.darwinbox.flutter.FlutterEmbeddingActivity`, not the native
+`com.darwinbox.attendance.ui.AttendanceHomeActivity` it opened on 2026-08-17.
+Darwinbox has migrated that section to Flutter.
+
+Consequence: the `test` profile's second tap (`360,1136`, calibrated against the old
+native Attendance screen) is once again a no-op. Left as-is deliberately — the test
+profile still exercises everything that matters (cold start, gesture dispatch,
+screenshot, close, auto-sleep), and Flutter views frequently expose no stable
+`uiautomator` node bounds to calibrate against. Re-measure only if the second tap
+needs to do real work.

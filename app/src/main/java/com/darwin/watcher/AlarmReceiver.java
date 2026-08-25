@@ -53,6 +53,14 @@ public class AlarmReceiver extends BroadcastReceiver {
         if (scheduleId != null) {
             Prefs.ScheduleItem item = Prefs.getScheduleById(app, scheduleId);
             if (item != null && item.enabled) {
+                if (Prefs.scheduleAlreadyRanToday(app, scheduleId)) {
+                    // Already ran today - a duplicate delivery from a same-day re-arm,
+                    // a boot re-registration, or an OS repeat. Re-arm the next occurrence
+                    // and drop this run. Deliberately does NOT touch the target app or
+                    // active profile: a skipped run must not change state.
+                    Runner.scheduleItem(app, item);
+                    return;
+                }
                 shouldRun = true;
                 if (item.targetPackage != null && item.targetPackage.length() > 0) {
                     Prefs.setTargetApp(app, item.targetPackage, item.targetLabel);
@@ -60,6 +68,8 @@ public class AlarmReceiver extends BroadcastReceiver {
                 if (item.profile != null && item.profile.length() > 0) {
                     Prefs.setCurrentProfile(app, item.profile);
                 }
+                // Stamp before dispatching, so a crash mid-run cannot license a repeat.
+                Prefs.setScheduleLastRunDate(app, scheduleId, Prefs.todayStamp());
                 Runner.scheduleItem(app, item); // Reschedule for next occurrence with fresh jitter
             }
         } else if (slot > 0) {

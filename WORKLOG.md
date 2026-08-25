@@ -1,5 +1,19 @@
 # Work log
 
+## 2026-08-25
+- Fixed duplicate schedule runs: `Runner.scheduleItem()` re-armed the same day because it rebuilt `when` as today and rolled a fresh jitter, advancing the day only `if (triggerTime <= now)`. Fire at 08:05, re-roll to 08:15, 08:15 > 08:05, second run. On a toggle target (Darwinbox check-in/out) run two undid run one.
+- Added `Prefs.scheduleLastRunDate` / `setScheduleLastRunDate` / `clearScheduleLastRunDate` / `scheduleAlreadyRanToday` / `dateStamp` / `todayStamp`; stamp written with `commit()` so a mid-run crash cannot license a repeat.
+- `AlarmReceiver` skips a scheduled run already run today, re-arms, and does not touch target app or active profile on a skipped run.
+- `Runner.scheduleItem()` never arms a trigger on a date already recorded as run; also closes the `BOOT_COMPLETED` re-registration path.
+- `Prefs.saveSchedule()` clears the stamp, so editing a schedule to a later time the same day still arms today.
+- Verified on device: fire at 12:45 with nominal 12:49 +/-5 re-armed to `2026-08-26 12:53:44` (tomorrow). Duplicate `scheduleId` broadcast produced no run (24s activity trace stayed `(none)`). `isTest` broadcast still runs.
+- Rebuilt, uninstalled, reinstalled, restored prefs from backup; `install.ps1` all-PASS; both `Darwin` schedules re-armed (17:35:56 today, 08:10:47 tomorrow); token, chat, 3 profiles, 2 action sets intact.
+- Re-checked Darwinbox bounds: dashboard identical to 2026-08-17, `checkInShortcut [32,432][688,570]` unchanged, so the production profile is unaffected. Attendance section migrated to `FlutterEmbeddingActivity`, making the `test` profile's second tap a no-op (documented, left as-is).
+- Archived Samsung port plan to `tasks/plan-samsung-port.md` / `tasks/todo-samsung-port.md`.
+- Open: `/live` Telegram live view (Tasks 3-5) not started.
+- Open: device-aware naming + MIUI dead-ends (Task 6) not started.
+- Open: stray no-op alarm for the removed `sched_verify` schedule fires once at 2026-08-26 12:53 and does nothing (`getScheduleById` returns null); clears on reboot.
+
 ## 2026-08-17
 - Ported to Samsung SM-M055F (Galaxy M05), One UI 8.0, Android 16 / API 36, 720x1600.
 - Measured real Darwinbox node bounds on 720x1600; recorded in `tasks/coords.md`.
