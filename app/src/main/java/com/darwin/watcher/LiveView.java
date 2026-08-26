@@ -69,6 +69,62 @@ public final class LiveView {
     private static Rect view = null;
     private static final ArrayList<Rect> zoomStack = new ArrayList<Rect>();
 
+    /** Held for the duration of a session so the screen cannot sleep mid-view. */
+    private static android.os.PowerManager.WakeLock wakeLock = null;
+
+    /**
+     * A screenshot taken while the display is off is solid black - the capture
+     * "succeeds" and returns a useless frame. Runner wakes the screen before it
+     * automates; live view has to do the same or it shows darkness whenever the phone
+     * has been idle, which looks exactly like "live mode stopped working".
+     */
+    private static void ensureScreenOn(Context context) {
+        try {
+            android.os.PowerManager pm =
+                    (android.os.PowerManager) context.getSystemService(Context.POWER_SERVICE);
+            if (pm == null) return;
+
+            if (wakeLock == null) {
+                wakeLock = pm.newWakeLock(
+                        android.os.PowerManager.FULL_WAKE_LOCK
+                        | android.os.PowerManager.ACQUIRE_CAUSES_WAKEUP
+                        | android.os.PowerManager.ON_AFTER_RELEASE,
+                        "darwin:liveview");
+                wakeLock.setReferenceCounted(false);
+            }
+            if (!wakeLock.isHeld()) {
+                // Bounded by the session cap, so a crashed session cannot pin the
+                // screen on forever.
+                wakeLock.acquire(MAX_SESSION_MS + 60000L);
+            }
+
+            // FULL_WAKE_LOCK alone is unreliable on modern Android. WakeUnlockActivity
+            // carries turnScreenOn/showWhenLocked, which is what actually lights the
+            // display and clears the keyguard; it finishes itself immediately.
+            if (!pm.isInteractive()) {
+                DeviceUtils.wakeUpScreen(context);
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "could not wake screen", t);
+        }
+    }
+
+    private static void releaseScreen() {
+        try {
+            if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
+        } catch (Throwable ignored) { }
+    }
+
+    private static boolean screenIsOff(Context context) {
+        try {
+            android.os.PowerManager pm =
+                    (android.os.PowerManager) context.getSystemService(Context.POWER_SERVICE);
+            return pm != null && !pm.isInteractive();
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
     private LiveView() { }
 
     public static boolean isActive() {
@@ -85,7 +141,15 @@ public final class LiveView {
             startedAt = System.currentTimeMillis();
         }
         resetView();
-        capture(context);
+        // Wake first, then give the display a moment before the first frame - otherwise
+        // frame 1 is the black screen we were asleep on.
+        boolean wasOff = screenIsOff(context);
+        ensureScreenOn(context);
+        if (wasOff) {
+            HANDLER.postDelayed(new DelayedCapture(context.getApplicationContext()), 1600);
+        } else {
+            capture(context);
+        }
     }
 
     public static void stop(Context context, String why) {
@@ -93,6 +157,7 @@ public final class LiveView {
         active = false;
         auto = false;
         cancelTicker();
+        releaseScreen();
         messageId = 0;
         view = null;
         zoomStack.clear();
@@ -243,6 +308,19 @@ public final class LiveView {
         if (s == null) {
             TelegramNotifier.sendText(context, "⚠️ Live view needs the Accessibility service. Enable it and send /live again.", null);
             active = false;
+            return;
+        }
+        // The phone can doze off between frames - a capture taken then is solid black.
+        // Counts against the retry budget so a display that never wakes cannot loop.
+        if (screenIsOff(context)) {
+            ensureScreenOn(context);
+            if (attempt + 1 < CAPTURE_ATTEMPTS) {
+                HANDLER.postDelayed(new RetryCapture(context.getApplicationContext(), attempt + 1), 1400);
+            } else {
+                TelegramNotifier.sendText(context,
+                        "⚠️ The screen would not wake, so the frame would be black. "
+                        + "Try /wake then 🔄 Refresh.", null);
+            }
             return;
         }
         s.captureBitmap(new FrameHandler(context.getApplicationContext(), attempt));
