@@ -75,7 +75,7 @@ Runs a lightweight, battery-optimized foreground listener on the device with **I
 
 #### 🕹️ Supported Commands & Features:
 - **Interactive Inline Buttons**: Zero typing required — execute tasks, capture screenshots, and switch profiles with 1 tap.
-- **`/live`** & **`/live stop`**: **Live view & control** — posts one screenshot message that is *replaced* on each refresh (never floods the chat), with a 3x4 tap grid, Back/Home/Recents, manual Refresh and an Auto toggle. See the caveat below.
+- **`/live`** & **`/live stop`**: **Live view & control** — posts one screenshot message that is *replaced* on each refresh (never floods the chat), with a 4x6 zoom grid drawn on the frame, Back/Home/Recents, manual Refresh and an Auto toggle. See the caveat below.
 - **`/run`** & **`/run in <time>`**: Execute automation immediately or set a delayed one-off timer (*e.g., `/run in 10m` or `/run in 45s`*).
 - **`/wake`** & **`/sleep`**: Remotely wake display & dismiss keyguard or put device to sleep.
 - **`/profiles`** or **`/profile <name>`**: Interactively switch active automation profile.
@@ -282,13 +282,72 @@ That needs a PC that can reach the phone. `/live` is for when all you have is yo
 
 ### Controls
 
-The tap grid is **coarse by design** — 12 cells over the whole screen, labelled 1-12
-row-major, with each button tapping its cell centre. Cell centres are computed from
-`getDisplayMetrics()`, so the grid adapts to any screen. For anything precise, read the
-coordinates off the live frame and use `/tap <x> <y>`.
+The grid is a **zoom selector, not a tapper**. A grid coarse enough to fit an inline
+keyboard cannot hit a button: on 720x1600 a 4x6 grid is still 180x267px per cell. So
+numbers **zoom** into that region and redraw; the **✥ TAP** button hits the red crosshair
+at the centre of whatever is currently shown. One zoom reaches ~45x67px, which is
+button-sized. **🔍 Out** steps back a level, **⛶ Whole** returns to the full screen.
+
+The grid, its numbers and the crosshair are drawn **onto the frame itself** — numbers
+living only in the keyboard leave you guessing which part of the screen each one means.
+
+Cell geometry comes from `getDisplayMetrics()`, so it adapts to any screen. For anything
+precise, read the coordinates off the live frame and use `/tap <x> <y>`.
+
+### What `/live` needs (and does not need)
+
+`/live` runs over the **Telegram Bot API**, exactly like `/run` and `/status`. The phone
+holds an outbound HTTPS long-poll to `api.telegram.org`. Therefore:
+
+- It does **not** need ADB, USB, a PC, or you to be on the same network as the phone.
+- It **does** need the phone to have working internet. That is the only requirement.
+
+The screen is woken automatically. A screenshot taken while the display is off does not
+fail — it returns a **solid black frame** (~7.9KB versus ~180KB for a real screen), which
+is why live view previously appeared to "stop working" whenever the phone had been idle.
+`LiveView.ensureScreenOn()` now holds a session wake lock and calls
+`DeviceUtils.wakeUpScreen()` when the display is off, the same path `Runner` uses.
 
 ### Privacy
 
 Live frames are uploaded to your Telegram chat. Whatever is on screen goes with them.
 Live view never starts on its own — it is only ever started by `/live` or the menu
 button, and it stops itself.
+tail -5 README.md
+
+---
+
+## 📶 Connectivity facts for this device (SM-M055F)
+
+`gsm.sim.state = ABSENT,ABSENT` — **there is no SIM in this phone**, so it has no mobile
+data. Its only route to the internet is Wi-Fi.
+
+| Situation | Telegram commands (`/live`, `/run`, …) |
+|---|---|
+| Phone on any Wi-Fi with internet, you anywhere in the world | works |
+| Phone out of Wi-Fi range | cannot work — no path to Telegram |
+
+Moving the phone somewhere new means joining it to that Wi-Fi once. You never need to be
+on the same network as the phone.
+
+`wifi_sleep_policy=2` and power saving off, so Wi-Fi stays associated while idle.
+
+## 🖥 scrcpy (real-time mirroring — needs a PC that can reach the phone)
+
+Installed via `winget install Genymobile.scrcpy`. Two desktop shortcuts:
+
+- **Phone Mirror** — phone on USB
+- **Phone Mirror (WiFi)** — runs `phone-mirror.ps1`: remembers the last working address,
+  and if the phone is unreachable but plugged in, auto-detects its current IP, re-enables
+  wireless ADB, saves it and starts
+
+Wireless ADB (`adb tcpip 5555`) **switches off whenever the phone reboots**. Recovery:
+plug in USB, run the Wi-Fi shortcut once, unplug.
+
+Two PowerShell gotchas that broke that script and are worth remembering:
+
+- Do not use `$ErrorActionPreference = 'Stop'` around native commands. PowerShell 5.1
+  wraps a program's stderr in error records, and `adb` writes ordinary messages such as
+  `no devices found` to stderr — which aborts the script mid-way.
+- `$matches` is overwritten by the *next* `-match`. Capture `$matches[1]` into a variable
+  before comparing anything else.
