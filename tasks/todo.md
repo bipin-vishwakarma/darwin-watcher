@@ -46,8 +46,9 @@ Full detail in [plan.md](plan.md). Previous plans: [plan-liveview.md](plan-livev
 - [x] **Task 5** — One frame in flight at a time
   - [x] in-flight guard; an overlapping frame replaces the waiting one (latest-wins,
         one slot) instead of queueing — the newest frame is always the most settled
-  - [ ] no `canceled by new edit message request` across ten actions *(verified in Task 8)*
-  - [ ] still exactly one chat message per session *(verified in Task 8)*
+  - [x] no `canceled by new edit message request` across ten actions — 11 frames,
+        11 delivered, 5 coalesced, zero HTTP 400 (logcat 2026-08-27 11:45-11:46)
+  - [x] still exactly one chat message per session — messageId=318 throughout
 
 ## Phase 3 — On-device hardening (in person, today)
 - [x] **Task 6** — Samsung settings ADB cannot reach *(mostly done via ADB instead)*
@@ -71,8 +72,8 @@ Full detail in [plan.md](plan.md). Previous plans: [plan-liveview.md](plan-livev
 
 ## Phase 4 — Prove it before departure
 - [ ] **Task 8** — Full pre-departure verification
-  - [ ] `/live`: frame, zoom, ✥ TAP, frame returns after tap
-  - [ ] `/status`, `/net`, `/menu` reply
+  - [x] `/live`: frame, zoom, ✥ TAP, frame returns after tap
+  - [x] `/status`, `/net`, `/menu` reply
   - [x] active profile is **`Darwin`** so emergency `/run` punches for real
   - [x] both schedules armed after the reinstall: 2026-08-27 18:16:41, 2026-08-28 08:14:38
         (plus the 15-min heartbeat), all held by AlarmManager
