@@ -33,7 +33,7 @@ Full detail in [plan.md](plan.md). Previous plans: [plan-liveview.md](plan-livev
   - [x] sent from the restarted process, then record cleared
   - [x] never repeats on a normal start; send failure never blocks startup
 
-- [ ] **Task 4** — Detect a wedged main thread from the poller thread
+- [x] **Task 4** — Detect a wedged main thread from the poller thread
   - [x] poller pings the main Handler every ~5 min and records when it runs
   - [x] ~3 min past due → persist record + kill so it restarts
   - [x] startup grace period; no extra main-thread work beyond an empty Runnable

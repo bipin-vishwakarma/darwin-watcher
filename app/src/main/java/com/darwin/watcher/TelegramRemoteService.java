@@ -229,6 +229,10 @@ public final class TelegramRemoteService extends Service {
     }
 
     private static final class PollerRunnable implements Runnable {
+        private static final long MAIN_PING_INTERVAL_MS = 120000L;  // ping every 2 min
+        private static final long MAIN_PING_DEAD_MS     = 240000L;  // no reply for 4 min = wedged
+        private static volatile long mainPingSentAt = 0L;
+        private static volatile long mainPingRanAt  = 0L;
         private final Context context;
         private final Handler mainHandler;
         private final PowerManager.WakeLock wakeLock;
@@ -239,6 +243,60 @@ public final class TelegramRemoteService extends Service {
             this.wakeLock = wakeLock;
         }
 
+        /**
+         * Main-thread liveness watchdog, run from the poller thread.
+         *
+         * The 15-minute watchdog in AlarmReceiver cannot do this job: BroadcastReceivers
+         * run on the main thread, so a wedged main thread takes the watchdog down with
+         * it. The poller has its own thread and is the one component demonstrably still
+         * running when everything else has stopped, so the check belongs here.
+         *
+         * The crash handler covers exceptions. This covers the other way the main thread
+         * dies - a deadlock or ANR with no exception to catch.
+         */
+        private void checkMainThreadAlive() {
+            long now = System.currentTimeMillis();
+            boolean outstanding = mainPingSentAt > 0 && mainPingRanAt < mainPingSentAt;
+
+            if (outstanding
+                    && now - mainPingSentAt > MAIN_PING_DEAD_MS) {
+                long stuckSec = (now - mainPingSentAt) / 1000L;
+                Log.e(TAG, "Main thread unresponsive for " + stuckSec + "s - killing process to force a clean restart");
+                try {
+                    Prefs.setPendingCrashReport(context,
+                            "main|MainThreadUnresponsive|no Handler callback for " + stuckSec + "s|"
+                            + new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
+                                    .format(new java.util.Date()));
+                } catch (Throwable ignored) { }
+                android.os.Process.killProcess(android.os.Process.myPid());
+                System.exit(11);
+                return;
+            }
+
+            // First call has mainPingSentAt == 0, so the first ping goes out immediately
+            // and doubles as the startup grace period: nothing is judged until a ping
+            // has actually been outstanding for MAIN_PING_DEAD_MS.
+            // Only send a new ping when the previous one came back. Re-sending
+            // unconditionally would reset mainPingSentAt every interval, so the
+            // outstanding-ping age could never reach MAIN_PING_DEAD_MS and the
+            // watchdog would never fire - verified against a real wedged main thread.
+            if (!outstanding && now - mainPingSentAt >= MAIN_PING_INTERVAL_MS) {
+                // Stamp BEFORE posting: a live main thread can run the ping
+                // immediately, and if ranAt were set before sentAt the next pass
+                // would read it as outstanding.
+                mainPingSentAt = now;
+                mainHandler.post(new MainPing());
+            }
+        }
+
+        /** Costs the main thread one empty Runnable every couple of minutes. */
+        private static final class MainPing implements Runnable {
+            @Override
+            public void run() {
+                mainPingRanAt = System.currentTimeMillis();
+            }
+        }
+
         @Override
         public void run() {
             Log.i(TAG, "Telegram Bot poller thread active.");
@@ -247,6 +305,7 @@ public final class TelegramRemoteService extends Service {
             while (running) {
                 try {
                     heartbeatCounter++;
+                    checkMainThreadAlive();
                     if (heartbeatCounter % 3 == 0) {
                         DeviceUtils.ensureAccessibilityEnabled(context);
                         if (wakeLock != null && !wakeLock.isHeld()) {
