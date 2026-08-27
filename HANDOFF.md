@@ -138,3 +138,76 @@ Screenshots: use `adb shell screencap -p /sdcard/x.png` then `adb pull`. Piping
 - Device `R9ZY40E319D`; Wi-Fi ADB at `10.6.1.155:5555` on UPESNET.
 - Prefs backups (contain the live bot token — **never commit**):
   `C:\Rtmp\claude\O--UPES-11--People-Bipin-Darwin-Watcher\5872b0e4-856b-4307-9e41-3067b5806883\scratchpad\`
+
+---
+
+# Away runbook — 27 Aug to 1 Sep 2026
+
+The phone is at UPES on the charger, on UPESNET, with **no SIM** — Wi-Fi is the only
+path to Telegram. Wireless ADB is closed, so nothing on the device can be fixed
+remotely. Everything below is done from the Telegram chat.
+
+## What a healthy day looks like
+
+Two screenshots arrive, roughly **08:14** and **18:16**, Monday to Saturday.
+Nothing else. No news is good news.
+
+## If a screenshot does not arrive
+
+Work down this list, stopping at the first thing that answers.
+
+| Step | Command | What it means |
+|---|---|---|
+| 1 | `/status` | Replies → the listener is alive and on Wi-Fi. No reply → jump to "Total silence". |
+| 2 | `/live` | A frame arrives → the whole app is healthy and the miss was Darwinbox-side. |
+| 3 | `/run` | Performs the **real punch** (active profile is `Darwin`). Late, but recorded. |
+
+`/status` replying while `/live` does nothing used to be the classic half-dead
+signature — the poller thread surviving a dead main thread. That should no longer
+happen: a main-thread crash now kills the process, and a main thread that wedges
+without crashing is killed by the poller's watchdog within ~4 minutes. Either way
+`START_STICKY` and the system-held alarms bring it back.
+
+## Alerts you may receive
+
+```
+⚠ Darwin Watcher restarted after a crash
+  Thread   main
+  Error    <exception>
+  When     <timestamp>
+  Schedules and the listener are back up. No action needed.
+```
+
+This is **informative, not alarming** — it means the safety net did its job. One
+message per crash; the record is cleared once sent. Only worry if they arrive
+repeatedly in a short window, which would mean a restart loop.
+
+## Total silence
+
+`/status` not replying means one of:
+
+- the phone lost Wi-Fi (UPESNET outage, or it dropped and did not reconnect)
+- the phone lost power or was unplugged
+- Samsung froze the app despite the exemptions
+
+None of these are fixable remotely. Someone physically present has to unplug and
+replug the charger, or open Darwin Watcher once from the launcher.
+
+## Re-enabling wireless ADB when back
+
+Plug in USB, then run the **Phone Mirror (WiFi)** desktop shortcut once
+(`phone-mirror.ps1`). It re-runs `adb tcpip 5555` and reconnects.
+
+## Device state as left (verified 2026-08-27)
+
+| | |
+|---|---|
+| Both apps doze-whitelisted | `com.darwin.watcher`, `com.darwinbox.darwinbox` |
+| Both standby buckets | **5 (EXEMPTED)** — outranks Samsung's Never-sleeping-apps list |
+| `RUN_ANY_IN_BACKGROUND` | allow |
+| Wi-Fi sleep policy | 2 (never sleeps) |
+| Auto restart at set times | unset |
+| Screen lock | disabled |
+| Active profile | **`Darwin`** — so `/run` means "punch attendance for real" |
+| Service restart policy | `START_STICKY` |
+| Alarms | held by AlarmManager, survive process death and reboot |

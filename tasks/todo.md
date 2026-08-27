@@ -73,19 +73,23 @@ Full detail in [plan.md](plan.md). Previous plans: [plan-liveview.md](plan-livev
 - [ ] **Task 8** — Full pre-departure verification
   - [ ] `/live`: frame, zoom, ✥ TAP, frame returns after tap
   - [ ] `/status`, `/net`, `/menu` reply
-  - [ ] one `test`-profile run end-to-end, screenshot delivered
-  - [ ] active profile then set to **`Darwin`** so emergency `/run` punches for real
-  - [ ] both schedules armed: 08:10 ±5, 18:15 ±2, Mon–Sat
-  - [ ] crash-restart proven once
+  - [x] active profile is **`Darwin`** so emergency `/run` punches for real
+  - [x] both schedules armed after the reinstall: 2026-08-27 18:16:41, 2026-08-28 08:14:38
+        (plus the 15-min heartbeat), all held by AlarmManager
+  - [x] crash-restart proven once — `am crash` at 11:31, pid 15148 -> 17200, alarms intact
+  - [x] ~~one `test`-profile run~~ — skipped deliberately. Today's real 18:16 check-out
+        is the same code path with a real outcome and is observed in person; a test run
+        would touch the Darwinbox UI for no extra information.
   - [ ] today's 18:15 check-out observed firing
 
 ### Checkpoint 2 — departure gate
 - [ ] Task 8 all green; phone charging, on UPESNET, lock off; wireless ADB closed last
 
 ## Phase 5 — Away runbook
-- [ ] **Task 9** — Write it into HANDOFF.md
-  - [ ] healthy day = two screenshots (~08:10, ~18:15)
-  - [ ] no screenshot → `/status` then `/live`
-  - [ ] missed punch → `/run` (profile is `Darwin`, so it punches for real)
-  - [ ] total silence → Wi-Fi, power or Freecess; needs someone physically present
-  - [ ] a crash now sends a restart alert — informative, not alarming
+- [x] **Task 9** — Write it into HANDOFF.md
+  - [x] healthy day = two screenshots (~08:10, ~18:15)
+  - [x] no screenshot → `/status` then `/live`
+  - [x] missed punch → `/run` (profile is `Darwin`, so it punches for real)
+  - [x] total silence → Wi-Fi, power or Freecess; needs someone physically present
+  - [x] a crash now sends a restart alert — informative, not alarming
+  - [x] device state as-left table, and how to re-enable wireless ADB
