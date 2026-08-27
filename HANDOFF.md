@@ -56,21 +56,30 @@ It must run unattended from **27 Aug to 1 Sep 2026** while the owner is 500 km a
 | Crash → clean restart | `am crash` at 11:31, pid 15148 → 17200, alarms intact |
 | Wedged main thread → restart | `Main thread unresponsive for 252s`, pid 13797 → 14980 |
 | One Telegram alert per crash | received, formatted, record cleared |
-| `/live` frames, zoom, TAP, Back, Home, Refresh | 11 frames sent, 11 delivered |
+| **18:16 check-out, unattended** | **fired and delivered with no laptop, no ADB, nobody at the phone — 2026-08-27** |
 | One frame in flight | 5 coalesced, zero `canceled by new edit message request`, single messageId 318 |
 | `/status`, `/net`, `/menu` | reply |
 | Both apps doze-exempt | `com.darwin.watcher` + `com.darwinbox.darwinbox`, both bucket 5 |
 | Schedules armed | 2026-08-27 18:16:41, 2026-08-28 08:14:38, plus 15-min heartbeat |
 | Telegram reachable | `ESTAB … 149.154.166.110:443` |
 
+### Broken
+
+- **`/live` returns nothing.** Confirmed silent at ~18:30 on 2026-08-27, after the
+  440px/quality-45/one-settle-frame build went on at ~13:00. That build was verified with
+  exactly **one** frame (13:26, delivered in 4813ms) before device access was lost, so it
+  is the least-tested thing on the phone. Suspect it first; the previous build
+  (560px/q70/two settle frames) was slow but delivered reliably.
+  **Not diagnosable or fixable without ADB.** Attendance does not depend on it.
+
 ### Not done
 
-- **Task 7 — wireless ADB is still open** on `10.6.1.155:5555`. Deliberate: it must be the
-  last action, and today's 18:16 check-out had not been observed yet.
+- **Task 7 — wireless ADB was never closed.** Port `5555` is still listening on the
+  phone's UPESNET LAN. Anyone on that network can connect to it. Intended to be the last
+  action; device access was lost before it happened. Close it on the first day back.
 
 ### Untested
 
-- Today's **18:16 check-out** firing unattended — the last run observable in person.
 - Behaviour across a phone reboot in this build (`BOOT_COMPLETED` reschedules and the
   service is `START_STICKY`, so it should hold, but it has not been exercised since the
   crash-handler change).
@@ -79,13 +88,23 @@ It must run unattended from **27 Aug to 1 Sep 2026** while the owner is 500 km a
 
 ## Exact next action
 
-1. Watch today's **18:16:41** check-out fire and confirm its screenshot reaches Telegram.
-2. Then close wireless ADB — **last action, nothing is remotely fixable afterwards**:
+Nothing can be done until someone is back on UPESNET — `10.6.1.155` is a UPES LAN address
+and `adb connect` times out from anywhere else. On the first day back, in this order:
+
+1. `adb connect 10.6.1.155:5555`, then diagnose `/live`:
    ```powershell
-   adb -s R9ZY40E319D usb
-   adb connect 10.6.1.155:5555   # must now refuse
+   adb logcat -c
+   adb logcat TelegramRemoteService:V LiveView:V AndroidRuntime:E "*:S" > live.log
+   # send /live from Telegram, then read live.log
    ```
-3. Leave the phone **on the charger**, on UPESNET, screen lock disabled.
+   If `Received Telegram command` appears but no `sending frame`, the failure is between
+   capture and upload. If nothing appears at all, the poller is not receiving commands.
+   First thing to try: revert `OUT_WIDTH`/`JPEG_QUALITY`/`SETTLE_MS` in `LiveView.java` to
+   560 / 70 / two frames at 1400ms and 4200ms — slow but known-good.
+2. Close wireless ADB: `adb -s R9ZY40E319D usb`, then confirm `adb connect
+   10.6.1.155:5555` refuses.
+3. Apply the complexity cleanups listed in `WORKLOG.md` under 2026-08-27 if wanted — they
+   are cosmetic and were deliberately deferred.
 
 ## Commands
 
@@ -134,8 +153,9 @@ Device: **SM-M055F**, serial `R9ZY40E319D`, wireless `10.6.1.155:5555`.
 # Away runbook — 27 Aug to 1 Sep 2026
 
 The phone is at UPES on the charger, on UPESNET, with **no SIM** (`gsm.sim.state =
-ABSENT,ABSENT`) — Wi-Fi is the only path to Telegram. Wireless ADB is closed, so nothing
-on the device is fixable remotely. Everything below is done from the Telegram chat.
+ABSENT,ABSENT`) — Wi-Fi is the only path to Telegram. Wireless ADB is still listening on
+port 5555 but only reachable from UPESNET, so from anywhere else nothing on the device is
+fixable remotely. Everything below is done from the Telegram chat.
 
 ## What a healthy day looks like
 
@@ -146,11 +166,15 @@ Two screenshots, roughly **08:14** and **18:16**, Monday to Saturday. Nothing el
 | Step | Command | What it means |
 |---|---|---|
 | 1 | `/status` | Replies → the listener is alive and on Wi-Fi. No reply → see "Total silence". |
-| 2 | `/live` | A frame arrives → the app is healthy; the miss was Darwinbox-side. |
-| 3 | `/run` | Performs the **real punch** (active profile is `Darwin`). Late, but recorded. |
+| 2 | `/run` | Performs the **real punch** (active profile is `Darwin`). Late, but recorded. This is the fix, not a diagnostic. |
 
-`/status` replying while `/live` does nothing was the classic half-dead signature — the
-poller thread surviving a dead main thread. That should no longer happen: a main-thread
+**Do not rely on `/live`** — it is silent as of 2026-08-27 evening and cannot be repaired
+remotely. Its silence tells you nothing about whether attendance is working.
+
+`/status` replying while `/live` does nothing used to be the half-dead signature — the
+poller thread surviving a dead main thread. **That inference no longer holds**, because
+`/live` is independently broken. Judge health by whether the 08:14 and 18:16 screenshots
+arrive, not by `/live`. On the mechanism itself: a main-thread
 crash kills the process, and a main thread that wedges without crashing is killed by the
 poller's watchdog within ~4 min. Either way `START_STICKY` and the system-held alarms
 bring it back.

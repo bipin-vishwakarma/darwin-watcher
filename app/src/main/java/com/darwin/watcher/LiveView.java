@@ -45,8 +45,11 @@ public final class LiveView {
             java.util.concurrent.Executors.newSingleThreadExecutor();
 
     /** Width of the frame sent to Telegram. Wide enough to read, small enough to upload. */
-    private static final int OUT_WIDTH = 560;
-    private static final int JPEG_QUALITY = 70;
+    // Upload time, not capture time, is what makes /live feel slow. Measured on the
+    // uni Wi-Fi: a 95KB frame took 6-18s to reach Telegram, a 43KB one took 1.3s.
+    // Smaller frames are worth far more than sharper ones.
+    private static final int OUT_WIDTH = 440;
+    private static final int JPEG_QUALITY = 45;
 
     /** Stop offering to zoom once a cell is about this small - just tap it. */
     private static final int MIN_CELL_PX = 24;
@@ -362,12 +365,14 @@ public final class LiveView {
     private static final long CAPTURE_RETRY_MS = 900L;
 
     /** Frame right after the action, then a second once the screen has settled. */
-    private static final long SETTLE_FIRST_MS = 1400L;
-    private static final long SETTLE_SECOND_MS = 4200L;
+    // One frame per action, not two. Two settle frames doubled the upload load on a
+    // link that already needs seconds per frame, and the second one usually arrived
+    // only to be coalesced away. By the time a single upload completes the screen is
+    // long settled anyway.
+    private static final long SETTLE_MS = 1600L;
 
     private static void captureAfterAction(Context context) {
-        HANDLER.postDelayed(new DelayedCapture(context), SETTLE_FIRST_MS);
-        HANDLER.postDelayed(new DelayedCapture(context), SETTLE_SECOND_MS);
+        HANDLER.postDelayed(new DelayedCapture(context), SETTLE_MS);
     }
 
     private static final class FrameHandler implements WatcherAccessibilityService.BitmapReady {
@@ -546,6 +551,7 @@ public final class LiveView {
         private final String cap;
         private final String kb;
         private final boolean wasEdit;
+        private final long sentAt = System.currentTimeMillis();
 
         ResultHandler(Context context, byte[] jpeg, String cap, String kb, boolean wasEdit) {
             this.context = context;
@@ -558,7 +564,8 @@ public final class LiveView {
         @Override
         public void onMessage(boolean ok, int id, String error) {
             if (ok) {
-                Log.i(TAG, "frame delivered, messageId=" + id);
+                Log.i(TAG, "frame delivered in " + (System.currentTimeMillis() - sentAt)
+                        + "ms, messageId=" + id);
                 consecutiveErrors = 0;
                 if (id > 0) messageId = id;
                 finishSend();

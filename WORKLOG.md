@@ -11,7 +11,11 @@
 - Corrected an earlier claim: Tasker and AutoInput are not installed on SM-M055F. `enabled_accessibility_services` holding only `com.darwin.watcher` is correct on this device; nothing was overwritten here.
 - `HANDOFF.md` rewritten as a cold-start handoff with the away runbook for 27 Aug - 1 Sep.
 - Commits on `samsung-oneui-port`: e7eac75, f8a2e16, 74685be, 07c41a0, 262145d, 049717a.
-- Open: Task 7 (close wireless ADB, `adb -s R9ZY40E319D usb`) deliberately not run - it must be the last action and today's 18:16 check-out has not been observed yet. Phone must stay on the charger.
+- Shrunk live-view frames after measuring upload time on the uni Wi-Fi: a 95KB frame took 6-18s to reach Telegram, a 43KB one took 1.3s. `OUT_WIDTH` 560 -> 440, `JPEG_QUALITY` 70 -> 45, and one settle frame at 1600ms instead of two at 1400/4200ms. Added upload duration to the delivery log. One frame verified through this build at 13:26 (51218B, delivered in 4813ms) before device access was lost.
+- **18:16:41 check-out fired unattended and delivered** - no laptop, no ADB, nobody at the phone. The attendance path is verified end to end.
+- `/live` reported silent again ~18:30, after the shrunk build. Not reproduced or diagnosed: the owner left UPESNET and `adb connect 10.6.1.155:5555` times out from any other network. The shrunk build is the least-tested code on the phone; the previous build (560/70/two frames) was slow but delivered reliably.
+- Ponytail complexity review of the session diff: ~55 lines cuttable (crash record stored as a pre-formatted string instead of a `|`-delimited record parsed on read, `MainPing` class -> lambda, `Object[]` pending slot -> `byte[]`, duplicate debug logging, duplicated comment blocks). Deliberately not applied - cosmetic changes to working code hours before a 5-day unattended run.
+- Open: `/live` returns nothing; needs ADB on UPESNET to diagnose. Task 7 never ran, so port 5555 is still listening on the phone's LAN. Both are first-day-back work. Attendance itself is working.
 
 ## 2026-08-26
 - Fixed main-thread crash on fire-and-forget taps: `GestureCallback.onCompleted/onCancelled` called `done.call()` with no null check; live view, `/tap` and `/swipe` all pass `done = null`. Gesture callbacks run on the main thread, so the NPE wedged the main Looper and killed every pending `postDelayed`, including the post-tap screenshot. Confirmed in logcat: `AndroidRuntime NPE ... GestureCallback.onCompleted:1259` + `CrashShield intercepted uncaught exception in thread main`.
