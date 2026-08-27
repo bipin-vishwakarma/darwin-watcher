@@ -75,6 +75,7 @@ Runs a lightweight, battery-optimized foreground listener on the device with **I
 
 #### 🕹️ Supported Commands & Features:
 - **Interactive Inline Buttons**: Zero typing required — execute tasks, capture screenshots, and switch profiles with 1 tap.
+- **`/live`** & **`/live stop`**: **Live view & control** — posts one screenshot message that is *replaced* on each refresh (never floods the chat), with a 4x6 zoom grid drawn on the frame, Back/Home/Recents, manual Refresh and an Auto toggle. See the caveat below.
 - **`/run`** & **`/run in <time>`**: Execute automation immediately or set a delayed one-off timer (*e.g., `/run in 10m` or `/run in 45s`*).
 - **`/wake`** & **`/sleep`**: Remotely wake display & dismiss keyguard or put device to sleep.
 - **`/profiles`** or **`/profile <name>`**: Interactively switch active automation profile.
@@ -93,7 +94,9 @@ Runs a lightweight, battery-optimized foreground listener on the device with **I
 - **CPU WakeLock Shield**: Continuous `PARTIAL_WAKE_LOCK` prevents CPU deep-sleep freeze on Xiaomi/Samsung/Pixel devices.
 - **15-Minute Watchdog Heartbeat**: Recurring `setExactAndAllowWhileIdle` pulse continuously verifies listener & accessibility health.
 - **Doze & Battery Optimization Bypass**: Whitelisted via `dumpsys deviceidle whitelist` + `AppOps` permissions (`10008` Auto-start, `10021` Lockscreen, `10022` Background popups).
-- **Process CrashShield**: Global uncaught exception handler prevents background runtime hiccups from terminating the process.
+- **Process CrashShield**: Global uncaught exception handler that records the crash to prefs, then **lets a main-thread crash kill the process** so `START_STICKY` restarts it clean. Background-thread crashes are logged and survived. Suppressing a main-thread kill (the old behaviour) left the process alive with a dead `Looper` — the Telegram poller kept replying while every alarm, `postDelayed` and screenshot callback was silently dead.
+- **Main-thread liveness watchdog**: the poller thread posts an empty `Runnable` to the main `Handler` every 2 min; no reply for 4 min means the main thread is wedged without having crashed, so the process is killed and restarted.
+- **Restart alert**: on startup a pending crash record is sent to Telegram once, then cleared.
 
 ---
 
@@ -118,12 +121,21 @@ Runs a lightweight, battery-optimized foreground listener on the device with **I
 ## 🛠️ Quickstart: Build & 1-Click Provision
 
 ### Prerequisites
-- Android SDK (`build-tools`, `platforms;android-33`)
-- PowerShell (Windows) or ADB
+- Android SDK: `platform-tools`, `build-tools;33.0.2`, `platforms;android-33-ext5`
+  (`build.ps1` reads `build-tools\33.0.2` and `platforms\android-33-ext5\android.jar` — these exact versions)
+- JDK with `javac`, `java`, `keytool` on PATH (JDK 22 works; `--release 8` only emits obsolete-target warnings)
+- `ANDROID_SDK_ROOT` or `ANDROID_HOME` pointing at the SDK
+- PowerShell (Windows)
 
 ### 1. Build the Debug APK
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\build.ps1
+```
+
+`build.ps1` signs with a debug keystore it generates at `$env:TEMP\darwin-watcher-debug.keystore`. That key is **not** the one the committed APK was signed with, so a locally built APK cannot `install -r` over a copy installed from `build/darwin-watcher-debug.apk`. You get `INSTALL_FAILED_UPDATE_INCOMPATIBLE` and must `adb uninstall com.darwin.watcher` first — **which wipes schedules, profiles and Telegram settings.** Back up first:
+
+```powershell
+adb shell "run-as com.darwin.watcher cat /data/data/com.darwin.watcher/shared_prefs/darwin_watcher.xml" > prefs-backup.xml
 ```
 
 ### 2. Automated Install & 24/7 Provisioning (USB or Wireless ADB)
@@ -134,7 +146,94 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 # For Wireless ADB connected phone:
 powershell -ExecutionPolicy Bypass -File .\install.ps1 192.168.1.10:43387
 ```
-*The `install.ps1` script automatically installs the APK, grants `WRITE_SECURE_SETTINGS`, whitelists battery optimization, configures auto-start AppOps, and locks accessibility in Android Secure Settings.*
+
+`install.ps1` installs the APK, grants `WRITE_SECURE_SETTINGS`, whitelists doze/battery optimisation, applies OEM-specific keep-alive settings, and appends the accessibility service to Android Secure Settings. It reports **PASS/FAIL/SKIP per command** and finishes with a 7-check verification of actual end state, then exits non-zero if anything failed. It is idempotent — re-running a healthy device changes nothing.
+
+Wireless ADB on Android 11+ needs a one-time pairing before `install.ps1 <ip>:<port>` will work:
+```powershell
+adb pair <ip>:<pairing-port>   # 6-digit code from Wireless debugging > Pair device with pairing code
+```
+The pairing port differs from the connect port shown under "IP address & Port". `adb connect` to an unpaired port reports the device as `offline`.
+
+---
+
+## 📱 Per-device notes
+
+Automation coordinates are **screen-resolution specific**. Re-measure them per device — never rescale by hand. See `tasks/coords.md` for the measured map of the current device and the re-calibration procedure.
+
+| Device | Screen | Status |
+|---|---|---|
+| Xiaomi Mi 11X (MIUI, Android 13) | 1080x2400 | original target |
+| Samsung SM-M055F / Galaxy M05 (One UI 8, Android 16 / API 36) | 720x1600 | verified working |
+
+### Samsung / One UI
+
+`install.ps1` handles what ADB can reach. These have **no ADB equivalent** and are required:
+
+1. Developer options → **USB debugging (Security settings)** → ON (needed for `WRITE_SECURE_SETTINGS` after a factory reset)
+
+**Never sleeping apps is not one of them.** An app that is already doze-whitelisted does
+not appear in Samsung's picker, because the picker only lists apps that are still
+optimised — its absence means it is *already* exempt, not that something failed. Do this
+over ADB for both this app and the target app instead; it is stronger and scriptable:
+
+```powershell
+adb shell "dumpsys deviceidle whitelist +com.darwin.watcher"
+adb shell "dumpsys deviceidle whitelist +com.darwinbox.darwinbox"
+adb shell "am get-standby-bucket com.darwinbox.darwinbox"   # becomes 5 on its own
+```
+
+`am set-standby-bucket <pkg> 5` throws `IllegalArgumentException: Cannot set the standby
+bucket to 5` — bucket 5 is only reachable by whitelisting, never set directly. With both
+apps at bucket 5, **Put unused apps to sleep** and **Optimise battery usage** are moot.
+
+One UI runs **Freecess**, which repeatedly tries to freeze both this app and the target app (visible as `FreecessHandler: freeze <pkg> result : 2` in logcat). It cannot be disabled over ADB — step 1 above is the mitigation.
+
+The MIUI keep-alive AppOps (`10008` autostart, `10021` lock screen, `10022` background popups) **do not exist on One UI** and are skipped automatically.
+
+### Android 14+ / targetSdk warning
+
+`targetSdkVersion` is **33** and must stay there. Raising it to 34+ makes Android require `android:foregroundServiceType` plus a matching `FOREGROUND_SERVICE_*` permission, neither of which `TelegramRemoteService` declares — the 24/7 listener would fail to start. Verified running on Android 16 at targetSdk 33 (`types=0x00000000`).
+
+`android:persistent="true"` in the manifest is silently ignored for non-system apps. It contributes nothing to the keep-alive.
+
+### Useful verification commands
+
+```powershell
+adb shell "dumpsys activity services com.darwin.watcher | grep -E 'ServiceRecord|isForeground'"
+adb shell "dumpsys alarm | grep -B1 -A3 'Alarm{.*com.darwin.watcher'"
+adb shell "am get-standby-bucket com.darwin.watcher"   # 5 = EXEMPTED (best), 10 = ACTIVE
+adb shell settings get secure enabled_accessibility_services
+adb shell "run-as com.darwin.watcher cat /data/data/com.darwin.watcher/shared_prefs/darwin_watcher.xml"
+adb shell "dumpsys deviceidle whitelist | grep -i darwin"
+adb shell "ss -tn | grep 149.154"                      # ESTAB = talking to Telegram
+```
+
+Prove the crash-restart path (safe — injects a synthetic crash, runs no automation):
+```powershell
+adb shell "pidof com.darwin.watcher"
+adb shell "am crash com.darwin.watcher"
+adb shell "pidof com.darwin.watcher"   # the pid MUST change
+```
+
+This device's logcat is flooded by `HeatmapThread`/`Light`, so `logcat -d | grep` loses
+app lines within ~30 s. Capture to a file with tag filters instead:
+```powershell
+adb logcat -c
+adb logcat LiveView:V DarwinWatcher:V TelegramNotifier:V AndroidRuntime:E "*:S" > liveview.log
+```
+
+Trigger a run through the real alarm path (uses the currently active profile):
+```powershell
+adb shell "am broadcast -n com.darwin.watcher/.AlarmReceiver --ez isTest true"
+```
+
+Do **not** launch the target with `monkey -p <pkg> 1` — monkey injects one pseudo-random event after launching, which can press Back and silently drop the app out of the foreground. Use `am start -n <pkg>/<activity>`.
+
+### Two behaviours that surprise people
+
+- **A firing schedule rewrites the active profile.** `AlarmReceiver` calls `Prefs.setTargetApp` and `Prefs.setCurrentProfile` from the schedule's own fields, so after any scheduled run the active profile is that schedule's profile — not whatever you had selected. Check the active profile before a manual run.
+- **Action text is keyword-filtered.** `Runner.parse()` rejects the whole profile if the text contains any of ~30 words (`checkin`, `attendance`, `login`, `otp`, `password`, …). Keep profiles to bare `tap` / `wait` / `swipe` lines — a descriptive comment mentioning one of those words will throw `Blocked risky word`.
 
 ---
 
@@ -162,6 +261,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 192.168.1.10:43387
 │   │   ├── Runner.java                      # Action execution loop, warmup countdown & auto-sleep
 │   │   ├── TelegramRemoteService.java       # Two-way foreground bot poller, callback queries & command hub
 │   │   ├── TelegramNotifier.java            # Multi-part Telegram client with Markdown & inline keyboards
+│   │   ├── LiveView.java                    # /live grid frames, tap/zoom controls, one-frame-in-flight sender
 │   │   ├── WakeUnlockActivity.java          # Keyguard dismissal & screen turn-on activity
 │   │   ├── AlarmReceiver.java               # Exact alarm scheduler with 15-min watchdog heartbeat
 │   │   ├── DarwinDeviceAdminReceiver.java   # Universal Device Administrator protection
@@ -184,3 +284,108 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 192.168.1.10:43387
 
 **Bipin Vishwakarma**
 - GitHub: [@bipin-vishwakarma](https://github.com/bipin-vishwakarma)
+
+---
+
+## 🖥 Live view (`/live`) — what it is and isn't
+
+`/live` is a **refreshing still image, not video.** Two hard limits make real-time
+mirroring impossible from inside the app:
+
+- `AccessibilityService.takeScreenshot` is rate-limited by the platform to roughly one
+  call per second.
+- Every frame is a fresh multipart upload to Telegram, which applies its own per-chat
+  edit rate limits.
+
+Only **one frame is ever in flight**. Telegram cancels an edit that arrives while the
+previous one is still uploading (`canceled by new edit message request`), and the failure
+path then posts a *new* message — which is how a session used to sprout duplicate frames.
+A frame produced during a send now replaces any earlier waiting frame (one slot,
+latest-wins), so the final image is still the settled screen and one chat message is
+edited in place for the whole session.
+
+The honest ceiling is a frame every few seconds. Auto-refresh is floored at **3s**, and a
+session stops itself after **100 frames or 5 minutes** so a forgotten live view cannot
+drain the battery.
+
+**Want true real-time mirroring with full mouse and keyboard control?** Use
+[scrcpy](https://github.com/Genymobile/scrcpy) over ADB — 30-60fps, no app changes,
+and it needs nothing from this project:
+
+```bash
+scrcpy -s <device-serial>
+```
+
+That needs a PC that can reach the phone. `/live` is for when all you have is your phone.
+
+### Controls
+
+The grid is a **zoom selector, not a tapper**. A grid coarse enough to fit an inline
+keyboard cannot hit a button: on 720x1600 a 4x6 grid is still 180x267px per cell. So
+numbers **zoom** into that region and redraw; the **✥ TAP** button hits the red crosshair
+at the centre of whatever is currently shown. One zoom reaches ~45x67px, which is
+button-sized. **🔍 Out** steps back a level, **⛶ Whole** returns to the full screen.
+
+The grid, its numbers and the crosshair are drawn **onto the frame itself** — numbers
+living only in the keyboard leave you guessing which part of the screen each one means.
+
+Cell geometry comes from `getDisplayMetrics()`, so it adapts to any screen. For anything
+precise, read the coordinates off the live frame and use `/tap <x> <y>`.
+
+### What `/live` needs (and does not need)
+
+`/live` runs over the **Telegram Bot API**, exactly like `/run` and `/status`. The phone
+holds an outbound HTTPS long-poll to `api.telegram.org`. Therefore:
+
+- It does **not** need ADB, USB, a PC, or you to be on the same network as the phone.
+- It **does** need the phone to have working internet. That is the only requirement.
+
+The screen is woken automatically. A screenshot taken while the display is off does not
+fail — it returns a **solid black frame** (~7.9KB versus ~180KB for a real screen), which
+is why live view previously appeared to "stop working" whenever the phone had been idle.
+`LiveView.ensureScreenOn()` now holds a session wake lock and calls
+`DeviceUtils.wakeUpScreen()` when the display is off, the same path `Runner` uses.
+
+### Privacy
+
+Live frames are uploaded to your Telegram chat. Whatever is on screen goes with them.
+Live view never starts on its own — it is only ever started by `/live` or the menu
+button, and it stops itself.
+tail -5 README.md
+
+---
+
+## 📶 Connectivity facts for this device (SM-M055F)
+
+`gsm.sim.state = ABSENT,ABSENT` — **there is no SIM in this phone**, so it has no mobile
+data. Its only route to the internet is Wi-Fi.
+
+| Situation | Telegram commands (`/live`, `/run`, …) |
+|---|---|
+| Phone on any Wi-Fi with internet, you anywhere in the world | works |
+| Phone out of Wi-Fi range | cannot work — no path to Telegram |
+
+Moving the phone somewhere new means joining it to that Wi-Fi once. You never need to be
+on the same network as the phone.
+
+`wifi_sleep_policy=2` and power saving off, so Wi-Fi stays associated while idle.
+
+## 🖥 scrcpy (real-time mirroring — needs a PC that can reach the phone)
+
+Installed via `winget install Genymobile.scrcpy`. Two desktop shortcuts:
+
+- **Phone Mirror** — phone on USB
+- **Phone Mirror (WiFi)** — runs `phone-mirror.ps1`: remembers the last working address,
+  and if the phone is unreachable but plugged in, auto-detects its current IP, re-enables
+  wireless ADB, saves it and starts
+
+Wireless ADB (`adb tcpip 5555`) **switches off whenever the phone reboots**. Recovery:
+plug in USB, run the Wi-Fi shortcut once, unplug.
+
+Two PowerShell gotchas that broke that script and are worth remembering:
+
+- Do not use `$ErrorActionPreference = 'Stop'` around native commands. PowerShell 5.1
+  wraps a program's stderr in error records, and `adb` writes ordinary messages such as
+  `no devices found` to stderr — which aborts the script mid-way.
+- `$matches` is overwritten by the *next* `-match`. Capture `$matches[1]` into a variable
+  before comparing anything else.

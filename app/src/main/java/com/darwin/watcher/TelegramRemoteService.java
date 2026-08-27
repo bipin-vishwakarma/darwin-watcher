@@ -75,7 +75,7 @@ public final class TelegramRemoteService extends Service {
     public void onCreate() {
         super.onCreate();
         running = true;
-        DeviceUtils.installGlobalCrashShield();
+        DeviceUtils.installGlobalCrashShield(this);
         DeviceUtils.ensureAccessibilityEnabled(this);
         Log.i(TAG, "TelegramRemoteService started (24/7 Keep-Alive & Command Hub active).");
 
@@ -120,6 +120,7 @@ public final class TelegramRemoteService extends Service {
             } catch (Exception ignored) { }
         }
 
+        reportPendingCrash();
         startPoller();
     }
 
@@ -190,6 +191,36 @@ public final class TelegramRemoteService extends Service {
         return null;
     }
 
+
+    /**
+     * Reports a crash from the RESTARTED process, not the dying one - delivery must not
+     * depend on a crashing thread outliving its own exception. Sent once, then cleared.
+     */
+    private void reportPendingCrash() {
+        try {
+            String rec = Prefs.pendingCrashReport(this);
+            if (rec == null || rec.length() == 0) return;
+            Prefs.clearPendingCrashReport(this);
+
+            String[] p = rec.split(java.util.regex.Pattern.quote("|"), -1);
+            String thread = p.length > 0 ? p[0] : "?";
+            String type   = p.length > 1 ? p[1] : "?";
+            String msg    = p.length > 2 ? p[2] : "";
+            String when   = p.length > 3 ? p[3] : "";
+
+            StringBuilder sb = new StringBuilder();
+            sb.append("⚠️ Darwin Watcher restarted after a crash\n\n");
+            sb.append("🧵 Thread   ").append(thread).append("\n");
+            sb.append("💥 Error    ").append(type).append("\n");
+            if (msg.length() > 0) sb.append("📝 Detail   ").append(msg).append("\n");
+            if (when.length() > 0) sb.append("🕒 When     ").append(when).append("\n");
+            sb.append("\nSchedules and the listener are back up. No action needed.");
+            TelegramNotifier.sendText(this, sb.toString(), null);
+        } catch (Throwable t) {
+            Log.w(TAG, "could not report pending crash", t);
+        }
+    }
+
     private void startPoller() {
         if (workerThread != null && workerThread.isAlive()) return;
         workerThread = new Thread(new PollerRunnable(getApplicationContext(), mainHandler, wakeLock));
@@ -198,6 +229,10 @@ public final class TelegramRemoteService extends Service {
     }
 
     private static final class PollerRunnable implements Runnable {
+        private static final long MAIN_PING_INTERVAL_MS = 120000L;  // ping every 2 min
+        private static final long MAIN_PING_DEAD_MS     = 240000L;  // no reply for 4 min = wedged
+        private static volatile long mainPingSentAt = 0L;
+        private static volatile long mainPingRanAt  = 0L;
         private final Context context;
         private final Handler mainHandler;
         private final PowerManager.WakeLock wakeLock;
@@ -208,6 +243,60 @@ public final class TelegramRemoteService extends Service {
             this.wakeLock = wakeLock;
         }
 
+        /**
+         * Main-thread liveness watchdog, run from the poller thread.
+         *
+         * The 15-minute watchdog in AlarmReceiver cannot do this job: BroadcastReceivers
+         * run on the main thread, so a wedged main thread takes the watchdog down with
+         * it. The poller has its own thread and is the one component demonstrably still
+         * running when everything else has stopped, so the check belongs here.
+         *
+         * The crash handler covers exceptions. This covers the other way the main thread
+         * dies - a deadlock or ANR with no exception to catch.
+         */
+        private void checkMainThreadAlive() {
+            long now = System.currentTimeMillis();
+            boolean outstanding = mainPingSentAt > 0 && mainPingRanAt < mainPingSentAt;
+
+            if (outstanding
+                    && now - mainPingSentAt > MAIN_PING_DEAD_MS) {
+                long stuckSec = (now - mainPingSentAt) / 1000L;
+                Log.e(TAG, "Main thread unresponsive for " + stuckSec + "s - killing process to force a clean restart");
+                try {
+                    Prefs.setPendingCrashReport(context,
+                            "main|MainThreadUnresponsive|no Handler callback for " + stuckSec + "s|"
+                            + new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
+                                    .format(new java.util.Date()));
+                } catch (Throwable ignored) { }
+                android.os.Process.killProcess(android.os.Process.myPid());
+                System.exit(11);
+                return;
+            }
+
+            // First call has mainPingSentAt == 0, so the first ping goes out immediately
+            // and doubles as the startup grace period: nothing is judged until a ping
+            // has actually been outstanding for MAIN_PING_DEAD_MS.
+            // Only send a new ping when the previous one came back. Re-sending
+            // unconditionally would reset mainPingSentAt every interval, so the
+            // outstanding-ping age could never reach MAIN_PING_DEAD_MS and the
+            // watchdog would never fire - verified against a real wedged main thread.
+            if (!outstanding && now - mainPingSentAt >= MAIN_PING_INTERVAL_MS) {
+                // Stamp BEFORE posting: a live main thread can run the ping
+                // immediately, and if ranAt were set before sentAt the next pass
+                // would read it as outstanding.
+                mainPingSentAt = now;
+                mainHandler.post(new MainPing());
+            }
+        }
+
+        /** Costs the main thread one empty Runnable every couple of minutes. */
+        private static final class MainPing implements Runnable {
+            @Override
+            public void run() {
+                mainPingRanAt = System.currentTimeMillis();
+            }
+        }
+
         @Override
         public void run() {
             Log.i(TAG, "Telegram Bot poller thread active.");
@@ -216,6 +305,7 @@ public final class TelegramRemoteService extends Service {
             while (running) {
                 try {
                     heartbeatCounter++;
+                    checkMainThreadAlive();
                     if (heartbeatCounter % 3 == 0) {
                         DeviceUtils.ensureAccessibilityEnabled(context);
                         if (wakeLock != null && !wakeLock.isHeld()) {
@@ -322,6 +412,9 @@ public final class TelegramRemoteService extends Service {
             Log.i(TAG, "Processing Callback Query: " + data);
             DeviceUtils.ensureAccessibilityEnabled(context);
 
+            // Live view owns every cb_lv_* action and refreshes its own frame.
+            if (LiveView.handleCallback(context, data, queryId)) return;
+
             if ("cb_run".equals(data)) {
                 TelegramNotifier.answerCallbackQuery(context, queryId, "Executing automation...");
                 triggerRemoteRun();
@@ -372,6 +465,9 @@ public final class TelegramRemoteService extends Service {
             } else if ("cb_menu".equals(data)) {
                 TelegramNotifier.answerCallbackQuery(context, queryId, "Main Menu");
                 sendMainMenu();
+            } else if ("cb_live".equals(data)) {
+                TelegramNotifier.answerCallbackQuery(context, queryId, "Starting live view");
+                LiveView.start(context);
             } else {
                 TelegramNotifier.answerCallbackQuery(context, queryId, "Command received");
             }
@@ -390,6 +486,12 @@ public final class TelegramRemoteService extends Service {
                 String devName = DeviceUtils.getDeviceModelName();
                 String osName = DeviceUtils.getShortOS();
                 TelegramNotifier.sendText(context, "🏓 *Pong!* Darwin Watcher is online & active on *" + devName + "* (" + osName + ").", getMainMenuKeyboard(), null);
+            } else if ("/live".equals(cmd)) {
+                if (parts.length > 1 && "stop".equalsIgnoreCase(parts[1])) {
+                    LiveView.stop(context, "closed");
+                } else {
+                    LiveView.start(context);
+                }
             } else if ("/status".equals(cmd)) {
                 sendStatusReport();
             } else if ("/schedules".equals(cmd)) {
@@ -730,7 +832,8 @@ public final class TelegramRemoteService extends Service {
                 "[{\"text\":\"☀️ Wake Screen\",\"callback_data\":\"cb_wake\"},{\"text\":\"🔒 Lock Screen\",\"callback_data\":\"cb_lock\"}]," +
                 "[{\"text\":\"📊 Status\",\"callback_data\":\"cb_status\"},{\"text\":\"🔄 Profiles\",\"callback_data\":\"cb_profiles\"}]," +
                 "[{\"text\":\"⏰ Schedules\",\"callback_data\":\"cb_schedules\"},{\"text\":\"🔊 Find Phone\",\"callback_data\":\"cb_ring\"}]," +
-                "[{\"text\":\"🌐 Network & Info\",\"callback_data\":\"cb_net\"},{\"text\":\"🏠 Home\",\"callback_data\":\"cb_home\"}]" +
+                "[{\"text\":\"🌐 Network & Info\",\"callback_data\":\"cb_net\"},{\"text\":\"🏠 Home\",\"callback_data\":\"cb_home\"}]," +
+                "[{\"text\":\"🖥 Live View & Control\",\"callback_data\":\"cb_live\"}]" +
             "]}";
         }
 

@@ -18,17 +18,69 @@ public final class DeviceUtils {
 
     private DeviceUtils() { }
 
-    public static void installGlobalCrashShield() {
+    /**
+     * Records uncaught exceptions and, on the main thread, lets the process DIE.
+     *
+     * The previous version captured the default handler and never called it. That kept
+     * the process alive after a fatal main-thread exception - but Looper.loop() has
+     * already unwound by then, so the main thread is dead for good. Everything that runs
+     * on it stops silently: AlarmReceiver (scheduled runs, the 15-minute watchdog,
+     * accessibility self-heal), every Handler.postDelayed, the takeScreenshot callback
+     * and all of Runner. Meanwhile the Telegram poller has its own thread and keeps
+     * answering /status and /net, so the app looks perfectly healthy while attendance
+     * quietly stops being punched. Verified with `adb shell am crash`: FATAL EXCEPTION
+     * on main, and the pid was unchanged afterwards.
+     *
+     * Dying is the recoverable option. The service is START_STICKY and alarms live in
+     * AlarmManager, not in the process, so Android brings us straight back.
+     */
+    public static void installGlobalCrashShield(Context context) {
         if (crashShieldInstalled) return;
         crashShieldInstalled = true;
-        final Thread.UncaughtExceptionHandler defaultHandler = Thread.getDefaultUncaughtExceptionHandler();
-        Thread.setDefaultUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
-            @Override
-            public void uncaughtException(Thread t, Throwable e) {
-                Log.e(TAG, "⚡ CrashShield intercepted uncaught exception in thread " + t.getName(), e);
-                // Do not let the app process terminate silently - keep services alive
-            }
-        });
+        Context app = context != null ? context.getApplicationContext() : null;
+        Thread.setDefaultUncaughtExceptionHandler(
+                new CrashHandler(app, Thread.getDefaultUncaughtExceptionHandler()));
+    }
+
+    private static final class CrashHandler implements Thread.UncaughtExceptionHandler {
+        private final Context app;
+        private final Thread.UncaughtExceptionHandler defaultHandler;
+
+        CrashHandler(Context app, Thread.UncaughtExceptionHandler defaultHandler) {
+            this.app = app;
+            this.defaultHandler = defaultHandler;
+        }
+
+        @Override
+        public void uncaughtException(Thread t, Throwable e) {
+            boolean isMain = t == android.os.Looper.getMainLooper().getThread();
+            Log.e(TAG, "Uncaught exception in thread " + t.getName() + " (main=" + isMain + ")", e);
+
+            // Persisted with commit(): a dying process may not outlive an async apply().
+            try {
+                if (app != null) {
+                    String msg = e.getMessage() == null ? "" : e.getMessage();
+                    if (msg.length() > 160) msg = msg.substring(0, 160);
+                    Prefs.setPendingCrashReport(app,
+                            t.getName() + "|" + e.getClass().getSimpleName() + "|" + msg
+                            + "|" + new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss",
+                                    java.util.Locale.US).format(new java.util.Date()));
+                }
+            } catch (Throwable ignored) { }
+
+            // A background thread dying is survivable - the poller is restarted by the
+            // 15-minute watchdog, and killing the process over it would be worse.
+            if (!isMain) return;
+
+            try {
+                if (defaultHandler != null) {
+                    defaultHandler.uncaughtException(t, e);
+                    return;
+                }
+            } catch (Throwable ignored) { }
+            android.os.Process.killProcess(android.os.Process.myPid());
+            System.exit(10);
+        }
     }
 
     public static void wakeUpScreen(Context context) {
@@ -87,10 +139,30 @@ public final class DeviceUtils {
         }
     }
 
+    public static boolean isSamsung() {
+        String m = Build.MANUFACTURER != null ? Build.MANUFACTURER : "";
+        return m.toLowerCase().contains("samsung");
+    }
+
+    public static boolean isXiaomi() {
+        String m = (Build.MANUFACTURER != null ? Build.MANUFACTURER : "") + " "
+                 + (Build.BRAND != null ? Build.BRAND : "");
+        m = m.toLowerCase();
+        return m.contains("xiaomi") || m.contains("redmi") || m.contains("poco");
+    }
+
     public static String getDeviceModelName() {
         String manufacturer = Build.MANUFACTURER != null ? Build.MANUFACTURER.trim() : "";
         String model = Build.MODEL != null ? Build.MODEL.trim() : "";
         String marketName = Build.DEVICE != null ? Build.DEVICE.trim() : "";
+
+        // Samsung reports raw sales codes (SM-M055F) rather than the name on the box.
+        // Checked before the startsWith() shortcut below, which would otherwise pass
+        // "Samsung SM-M055F" straight through.
+        if (isSamsung()) {
+            String galaxy = galaxyName(model);
+            if (galaxy != null) return "Samsung " + galaxy;
+        }
 
         if (model.toLowerCase().startsWith(manufacturer.toLowerCase())) {
             return capitalize(model);
@@ -242,6 +314,38 @@ public final class DeviceUtils {
             }
         } catch (Exception ignored) { }
         return null;
+    }
+
+    /**
+     * Maps a Samsung sales code to its retail name. Only the prefix carries the series,
+     * so this stays short instead of enumerating every SKU: SM-M055F -> Galaxy M05.
+     * Returns null when the code is not recognised, so the caller can fall back.
+     */
+    private static String galaxyName(String model) {
+        if (model == null) return null;
+        String m = model.toUpperCase().trim();
+        if (!m.startsWith("SM-")) return null;
+        String code = m.substring(3);
+        if (code.length() < 2) return null;
+
+        char series = code.charAt(0);
+        StringBuilder digits = new StringBuilder();
+        for (int i = 1; i < code.length() && Character.isDigit(code.charAt(i)); i++) {
+            digits.append(code.charAt(i));
+        }
+        if (digits.length() == 0) return null;
+
+        // Only the M and A series map arithmetically: the padded number minus its
+        // trailing variant digit is the retail number (M055 -> M05, A546 -> A54).
+        // S, N and F do NOT follow this - SM-S911B is the Galaxy S23, not "S91", and
+        // SM-F946B is the Z Fold5 - so they fall through to the raw sales code rather
+        // than being confidently wrong.
+        if (series != 'M' && series != 'A') return null;
+
+        String num = digits.toString();
+        if (num.length() < 3) return null;
+        num = num.substring(0, num.length() - 1);
+        return "Galaxy " + series + num;
     }
 
     private static String capitalize(String str) {

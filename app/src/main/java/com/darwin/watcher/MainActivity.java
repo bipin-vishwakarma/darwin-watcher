@@ -81,7 +81,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        DeviceUtils.installGlobalCrashShield();
+        DeviceUtils.installGlobalCrashShield(this);
         DeviceUtils.ensureAccessibilityEnabled(this);
         AlarmReceiver.scheduleWatchdogHeartbeat(this);
         ensureTelegramRemoteService();
@@ -733,15 +733,17 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         final ArrayList<String> appLabels = new ArrayList<String>();
         final ArrayList<String> appPackages = new ArrayList<String>();
 
-        appLabels.add("Calculator (com.miui.calculator)");
-        appPackages.add("com.miui.calculator");
+        // Whichever calculator this device actually ships, not MIUI's by assumption.
+        String calcPkg = Prefs.defaultTargetPackage(this);
+        appLabels.add("Calculator (" + calcPkg + ")");
+        appPackages.add(calcPkg);
 
         appLabels.add("Darwinbox (com.darwinbox.darwinbox)");
         appPackages.add("com.darwinbox.darwinbox");
 
         String currPkg = Prefs.targetPackage(this);
         String currLbl = Prefs.targetLabel(this);
-        if (!"com.miui.calculator".equals(currPkg) && !"com.darwinbox.darwinbox".equals(currPkg) && currPkg.length() > 0) {
+        if (!calcPkg.equals(currPkg) && !"com.darwinbox.darwinbox".equals(currPkg) && currPkg.length() > 0) {
             appLabels.add(currLbl + " (" + currPkg + ")");
             appPackages.add(currPkg);
         }
@@ -936,6 +938,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
 
         TextView botCommands = text(
             "Send commands in Telegram:\n" +
+            "• /live - Live screen view + tap controls\n" +
             "• /run - Trigger automation from anywhere\n" +
             "• /sleep - Lock device & sleep screen\n" +
             "• /status - Live battery & device health\n" +
@@ -965,7 +968,15 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         batteryOpt.setOnClickListener(this);
         sysCard.addView(batteryOpt, margins(-1, dp(46), 0, 0, 0, 8));
 
-        Button miuiGuide = secondaryButton("🛡️ Xiaomi / MIUI 24/7 Keep-Alive Guide");
+        String guideLabel;
+        if (DeviceUtils.isSamsung()) {
+            guideLabel = "🛡️ Samsung / One UI 24/7 Keep-Alive Guide";
+        } else if (DeviceUtils.isXiaomi()) {
+            guideLabel = "🛡️ Xiaomi / MIUI 24/7 Keep-Alive Guide";
+        } else {
+            guideLabel = "🛡️ 24/7 Keep-Alive Guide";
+        }
+        Button miuiGuide = secondaryButton(guideLabel);
         miuiGuide.setTag("miuiGuide");
         miuiGuide.setOnClickListener(this);
         sysCard.addView(miuiGuide, margins(-1, dp(46), 0, 0, 0, 8));
@@ -1155,20 +1166,40 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         LinearLayout root = column();
         root.setPadding(dp(20), dp(16), dp(20), dp(16));
 
-        TextView title = text("🛡️ Xiaomi / MIUI 24/7 Keep-Alive", 16, 0xFF0F172A);
+        String titleText;
+        String infoText;
+        String autostartLabel;
+        if (DeviceUtils.isSamsung()) {
+            titleText = "🛡️ Samsung / One UI 24/7 Keep-Alive";
+            infoText =
+                "One UI runs 'Freecess', which freezes background apps - including this one and the app it drives. It cannot be disabled over ADB, so set these by hand:\n\n" +
+                "1. Battery ➔ Background usage limits ➔ Never sleeping apps ➔ add Darwin Watcher AND your target app\n" +
+                "2. Same screen ➔ 'Put unused apps to sleep' ➔ OFF\n" +
+                "3. Battery ➔ Optimise battery usage ➔ Darwin Watcher ➔ Not optimised";
+            autostartLabel = "1. Open Battery Optimisation Settings";
+        } else if (DeviceUtils.isXiaomi()) {
+            titleText = "🛡️ Xiaomi / MIUI 24/7 Keep-Alive";
+            infoText =
+                "MIUI & HyperOS aggressively shut down Accessibility services when idle. Configure these 3 quick settings for 100% reliability:\n\n" +
+                "1. Auto-Start ➔ Turn ON\n" +
+                "2. Battery Saver ➔ Set to 'No restrictions'\n" +
+                "3. Recent Apps ➔ Lock Darwin Watcher with Padlock 🔒";
+            autostartLabel = "1. Open Auto-Start Settings";
+        } else {
+            titleText = "🛡️ 24/7 Keep-Alive";
+            infoText =
+                "Android may stop background services when idle. Exempt Darwin Watcher from battery optimisation, and allow it to run in the background.";
+            autostartLabel = "1. Open Battery Optimisation Settings";
+        }
+
+        TextView title = text(titleText, 16, 0xFF0F172A);
         title.setTypeface(null, Typeface.BOLD);
         root.addView(title, margins(-1, -2, 0, 0, 0, 8));
 
-        TextView info = text(
-            "MIUI & HyperOS aggressively shut down Accessibility services when idle. Configure these 3 quick settings for 100% reliability:\n\n" +
-            "1. Auto-Start ➔ Turn ON\n" +
-            "2. Battery Saver ➔ Set to 'No restrictions'\n" +
-            "3. Recent Apps ➔ Lock Darwin Watcher with Padlock 🔒",
-            13, 0xFF334155
-        );
+        TextView info = text(infoText, 13, 0xFF334155);
         root.addView(info, margins(-1, -2, 0, 0, 0, 14));
 
-        Button btnAutoStart = primaryButton("1. Open Auto-Start Settings");
+        Button btnAutoStart = primaryButton(autostartLabel);
         btnAutoStart.setTag("openAutostart");
         btnAutoStart.setOnClickListener(this);
         root.addView(btnAutoStart, margins(-1, dp(44), 0, 0, 0, 8));
@@ -1184,18 +1215,42 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     }
 
     private void openMiuiAutostart() {
+        // One UI has no auto-start screen; the MIUI components below simply do not exist
+        // there, so Samsung goes straight to the battery-optimisation list instead of
+        // falling through two guaranteed failures.
+        if (DeviceUtils.isSamsung()) {
+            if (startIfResolvable(new Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))) return;
+            Intent deviceCare = new Intent();
+            deviceCare.setComponent(new ComponentName("com.samsung.android.lool",
+                    "com.samsung.android.sm.battery.ui.BatteryActivity"));
+            if (startIfResolvable(deviceCare)) return;
+            openAppDetailsSettings();
+            return;
+        }
+
+        Intent miui = new Intent();
+        miui.setComponent(new ComponentName("com.miui.securitycenter",
+                "com.miui.permcenter.autostart.AutoStartManagementActivity"));
+        if (startIfResolvable(miui)) return;
+
+        Intent letv = new Intent();
+        letv.setComponent(new ComponentName("com.letv.android.letvsafe",
+                "com.letv.android.letvsafe.AutobootManageActivity"));
+        if (startIfResolvable(letv)) return;
+
+        if (startIfResolvable(new Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))) return;
+        openAppDetailsSettings();
+    }
+
+    /** Starts the intent only if something can handle it, so a miss is never a dead tap. */
+    private boolean startIfResolvable(Intent intent) {
+        if (intent == null) return false;
         try {
-            Intent intent = new Intent();
-            intent.setComponent(new ComponentName("com.miui.securitycenter", "com.miui.permcenter.autostart.AutoStartManagementActivity"));
+            if (intent.resolveActivity(getPackageManager()) == null) return false;
             startActivity(intent);
-        } catch (Exception e1) {
-            try {
-                Intent intent = new Intent();
-                intent.setComponent(new ComponentName("com.letv.android.letvsafe", "com.letv.android.letvsafe.AutobootManageActivity"));
-                startActivity(intent);
-            } catch (Exception e2) {
-                openAppDetailsSettings();
-            }
+            return true;
+        } catch (Exception ignored) {
+            return false;
         }
     }
 

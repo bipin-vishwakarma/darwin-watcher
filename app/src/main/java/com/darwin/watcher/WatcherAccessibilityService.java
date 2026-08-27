@@ -135,6 +135,13 @@ public class WatcherAccessibilityService extends AccessibilityService implements
         foregroundPackage = null;
     }
 
+    /** Last non-self package seen in the foreground, or null. Used for live-view captions. */
+    public static String foregroundPackageName() {
+        WatcherAccessibilityService s = instance;
+        if (s == null || s.foregroundPackage == null) return null;
+        return s.foregroundPackage.toString();
+    }
+
     public boolean launchTarget(String packageName) {
         if (packageName == null) return false;
         try {
@@ -1022,7 +1029,7 @@ public class WatcherAccessibilityService extends AccessibilityService implements
         }
         GestureDescription.StrokeDescription stroke = new GestureDescription.StrokeDescription(path, start, duration);
         GestureDescription gesture = new GestureDescription.Builder().addStroke(stroke).build();
-        if (!dispatchGesture(gesture, new GestureCallback(done), null)) {
+        if (!dispatchGesture(gesture, new GestureCallback(done), null) && done != null) {
             done.call(false, "Gesture dispatch failed");
         }
     }
@@ -1249,12 +1256,16 @@ public class WatcherAccessibilityService extends AccessibilityService implements
 
         @Override
         public void onCompleted(GestureDescription gestureDescription) {
-            done.call(true, "OK");
+            // done is null for fire-and-forget taps (live view, /tap, /swipe). This
+            // callback runs on the main thread, so an unchecked null deref here throws
+            // on the main Looper and wedges it - which silently kills every pending
+            // postDelayed, including the live-view screenshot scheduled after a tap.
+            if (done != null) done.call(true, "OK");
         }
 
         @Override
         public void onCancelled(GestureDescription gestureDescription) {
-            done.call(false, "Gesture cancelled");
+            if (done != null) done.call(false, "Gesture cancelled");
         }
     }
 
@@ -1262,61 +1273,99 @@ public class WatcherAccessibilityService extends AccessibilityService implements
         void onFinished();
     }
 
-    private static final class ScreenshotCallbackHandler implements AccessibilityService.TakeScreenshotCallback {
-        private final Context context;
-        private final ScreenshotDone done;
-
-        ScreenshotCallbackHandler(Context context, ScreenshotDone done) {
-            this.context = context;
-            this.done = done;
-        }
-
-        @Override
-        public void onSuccess(AccessibilityService.ScreenshotResult result) {
-            try {
-                if (Build.VERSION.SDK_INT >= 30 && result != null) {
-                    Bitmap hw = Bitmap.wrapHardwareBuffer(result.getHardwareBuffer(), result.getColorSpace());
-                    if (hw != null) {
-                        Bitmap copy = hw.copy(Bitmap.Config.ARGB_8888, false);
-                        hw.recycle();
-                        result.getHardwareBuffer().close();
-                        if (copy != null) {
-                            ByteArrayOutputStream stream = new ByteArrayOutputStream();
-                            copy.compress(Bitmap.CompressFormat.JPEG, 85, stream);
-                            byte[] bytes = stream.toByteArray();
-                            copy.recycle();
-
-                            TelegramNotifier.sendPhoto(context, bytes, "✅ Darwin Watcher: Task finished on " + Prefs.targetLabel(context) + "!", null);
-                            if (done != null) done.onFinished();
-                            return;
-                        }
-                    }
-                }
-            } catch (Throwable t) {
-                android.util.Log.e("WatcherService", "Screenshot processing error", t);
-            }
-            TelegramNotifier.sendDone(context);
-            if (done != null) done.onFinished();
-        }
-
-        @Override
-        public void onFailure(int errorCode) {
-            android.util.Log.e("WatcherService", "Screenshot failed: code " + errorCode);
-            TelegramNotifier.sendDone(context);
-            if (done != null) done.onFinished();
-        }
+    /** Receives the raw screen bitmap, or null if the capture failed. */
+    public interface BitmapReady {
+        void onBitmap(Bitmap bmp);
     }
 
-    public void captureScreenshotAndSend(final Context context, final ScreenshotDone done) {
+    /**
+     * The single screenshot implementation. Hands back the raw bitmap and lets callers
+     * own presentation - the run screenshot wants full resolution, the live view wants
+     * a cropped, grid-annotated, downscaled frame.
+     *
+     * The platform rate-limits AccessibilityService.takeScreenshot to roughly one call
+     * per second, so anything refreshing on a timer must stay above that.
+     */
+    public void captureBitmap(BitmapReady cb) {
         if (Build.VERSION.SDK_INT >= 30) {
             try {
-                takeScreenshot(Display.DEFAULT_DISPLAY, getMainExecutor(), new ScreenshotCallbackHandler(context, done));
+                takeScreenshot(Display.DEFAULT_DISPLAY, getMainExecutor(), new BitmapCallbackHandler(cb));
                 return;
             } catch (Throwable t) {
                 android.util.Log.e("WatcherService", "takeScreenshot call failed", t);
             }
         }
-        TelegramNotifier.sendDone(context);
-        if (done != null) done.onFinished();
+        if (cb != null) cb.onBitmap(null);
+    }
+
+    public static byte[] compressJpeg(Bitmap bmp, int quality) {
+        if (bmp == null) return null;
+        try {
+            ByteArrayOutputStream stream = new ByteArrayOutputStream();
+            bmp.compress(Bitmap.CompressFormat.JPEG, quality, stream);
+            return stream.toByteArray();
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private static final class BitmapCallbackHandler implements AccessibilityService.TakeScreenshotCallback {
+        private final BitmapReady cb;
+
+        BitmapCallbackHandler(BitmapReady cb) {
+            this.cb = cb;
+        }
+
+        @Override
+        public void onSuccess(AccessibilityService.ScreenshotResult result) {
+            Bitmap out = null;
+            try {
+                if (Build.VERSION.SDK_INT >= 30 && result != null) {
+                    Bitmap hw = Bitmap.wrapHardwareBuffer(result.getHardwareBuffer(), result.getColorSpace());
+                    if (hw != null) {
+                        out = hw.copy(Bitmap.Config.ARGB_8888, false);
+                        hw.recycle();
+                        result.getHardwareBuffer().close();
+                    }
+                }
+            } catch (Throwable t) {
+                android.util.Log.e("WatcherService", "Screenshot processing error", t);
+            }
+            if (cb != null) cb.onBitmap(out);
+        }
+
+        @Override
+        public void onFailure(int errorCode) {
+            android.util.Log.e("WatcherService", "Screenshot failed: code " + errorCode);
+            if (cb != null) cb.onBitmap(null);
+        }
+    }
+
+    /** Sends the end-of-run screenshot at full resolution, then reports completion. */
+    private static final class SendRunScreenshot implements BitmapReady {
+        private final Context context;
+        private final ScreenshotDone done;
+
+        SendRunScreenshot(Context context, ScreenshotDone done) {
+            this.context = context;
+            this.done = done;
+        }
+
+        @Override
+        public void onBitmap(Bitmap bmp) {
+            byte[] jpeg = compressJpeg(bmp, 85);
+            if (bmp != null) bmp.recycle();
+            if (jpeg != null) {
+                TelegramNotifier.sendPhoto(context, jpeg,
+                        "✅ Darwin Watcher: Task finished on " + Prefs.targetLabel(context) + "!", null);
+            } else {
+                TelegramNotifier.sendDone(context);
+            }
+            if (done != null) done.onFinished();
+        }
+    }
+
+    public void captureScreenshotAndSend(final Context context, final ScreenshotDone done) {
+        captureBitmap(new SendRunScreenshot(context, done));
     }
 }

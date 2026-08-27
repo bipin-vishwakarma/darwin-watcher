@@ -26,7 +26,7 @@ public final class Runner {
 
     public static void run(Context context) {
         final Context app = context.getApplicationContext();
-        DeviceUtils.installGlobalCrashShield();
+        DeviceUtils.installGlobalCrashShield(app);
         DeviceUtils.ensureAccessibilityEnabled(app);
 
         WatcherAccessibilityService service = WatcherAccessibilityService.current();
@@ -144,6 +144,19 @@ public final class Runner {
         long now = System.currentTimeMillis();
         long triggerTime = when.getTimeInMillis() + jitterMillis;
         if (triggerTime <= now) {
+            when.add(Calendar.DAY_OF_MONTH, 1);
+            triggerTime = when.getTimeInMillis() + jitterMillis;
+        }
+
+        // Never re-arm on a date this schedule already ran.
+        //
+        // Re-arming happens immediately after a fire, and rolls a FRESH jitter. Fire at
+        // 08:05 (jitter -5), re-roll to +5, and the new trigger is 08:15 - still ahead of
+        // now, so the guard above does not advance the day and the schedule runs a second
+        // time. With a toggle-style target (Darwinbox check-in/out) the second run undoes
+        // the first. The same hazard exists on BOOT_COMPLETED, which re-arms everything
+        // with no memory of what already ran today.
+        if (Prefs.dateStamp(when).equals(Prefs.scheduleLastRunDate(context, item.id))) {
             when.add(Calendar.DAY_OF_MONTH, 1);
             triggerTime = when.getTimeInMillis() + jitterMillis;
         }
