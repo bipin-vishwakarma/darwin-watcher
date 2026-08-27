@@ -94,7 +94,9 @@ Runs a lightweight, battery-optimized foreground listener on the device with **I
 - **CPU WakeLock Shield**: Continuous `PARTIAL_WAKE_LOCK` prevents CPU deep-sleep freeze on Xiaomi/Samsung/Pixel devices.
 - **15-Minute Watchdog Heartbeat**: Recurring `setExactAndAllowWhileIdle` pulse continuously verifies listener & accessibility health.
 - **Doze & Battery Optimization Bypass**: Whitelisted via `dumpsys deviceidle whitelist` + `AppOps` permissions (`10008` Auto-start, `10021` Lockscreen, `10022` Background popups).
-- **Process CrashShield**: Global uncaught exception handler prevents background runtime hiccups from terminating the process.
+- **Process CrashShield**: Global uncaught exception handler that records the crash to prefs, then **lets a main-thread crash kill the process** so `START_STICKY` restarts it clean. Background-thread crashes are logged and survived. Suppressing a main-thread kill (the old behaviour) left the process alive with a dead `Looper` — the Telegram poller kept replying while every alarm, `postDelayed` and screenshot callback was silently dead.
+- **Main-thread liveness watchdog**: the poller thread posts an empty `Runnable` to the main `Handler` every 2 min; no reply for 4 min means the main thread is wedged without having crashed, so the process is killed and restarted.
+- **Restart alert**: on startup a pending crash record is sent to Telegram once, then cleared.
 
 ---
 
@@ -168,10 +170,22 @@ Automation coordinates are **screen-resolution specific**. Re-measure them per d
 
 `install.ps1` handles what ADB can reach. These have **no ADB equivalent** and are required:
 
-1. Settings → Battery → Background usage limits → **Never sleeping apps** → add Darwin Watcher **and the target app**
-2. Same screen → **Put unused apps to sleep** → OFF
-3. Settings → Battery → **Optimise battery usage** → Darwin Watcher → not optimised
-4. Developer options → **USB debugging (Security settings)** → ON (needed for `WRITE_SECURE_SETTINGS` after a factory reset)
+1. Developer options → **USB debugging (Security settings)** → ON (needed for `WRITE_SECURE_SETTINGS` after a factory reset)
+
+**Never sleeping apps is not one of them.** An app that is already doze-whitelisted does
+not appear in Samsung's picker, because the picker only lists apps that are still
+optimised — its absence means it is *already* exempt, not that something failed. Do this
+over ADB for both this app and the target app instead; it is stronger and scriptable:
+
+```powershell
+adb shell "dumpsys deviceidle whitelist +com.darwin.watcher"
+adb shell "dumpsys deviceidle whitelist +com.darwinbox.darwinbox"
+adb shell "am get-standby-bucket com.darwinbox.darwinbox"   # becomes 5 on its own
+```
+
+`am set-standby-bucket <pkg> 5` throws `IllegalArgumentException: Cannot set the standby
+bucket to 5` — bucket 5 is only reachable by whitelisting, never set directly. With both
+apps at bucket 5, **Put unused apps to sleep** and **Optimise battery usage** are moot.
 
 One UI runs **Freecess**, which repeatedly tries to freeze both this app and the target app (visible as `FreecessHandler: freeze <pkg> result : 2` in logcat). It cannot be disabled over ADB — step 1 above is the mitigation.
 
@@ -191,6 +205,22 @@ adb shell "dumpsys alarm | grep -B1 -A3 'Alarm{.*com.darwin.watcher'"
 adb shell "am get-standby-bucket com.darwin.watcher"   # 5 = EXEMPTED (best), 10 = ACTIVE
 adb shell settings get secure enabled_accessibility_services
 adb shell "run-as com.darwin.watcher cat /data/data/com.darwin.watcher/shared_prefs/darwin_watcher.xml"
+adb shell "dumpsys deviceidle whitelist | grep -i darwin"
+adb shell "ss -tn | grep 149.154"                      # ESTAB = talking to Telegram
+```
+
+Prove the crash-restart path (safe — injects a synthetic crash, runs no automation):
+```powershell
+adb shell "pidof com.darwin.watcher"
+adb shell "am crash com.darwin.watcher"
+adb shell "pidof com.darwin.watcher"   # the pid MUST change
+```
+
+This device's logcat is flooded by `HeatmapThread`/`Light`, so `logcat -d | grep` loses
+app lines within ~30 s. Capture to a file with tag filters instead:
+```powershell
+adb logcat -c
+adb logcat LiveView:V DarwinWatcher:V TelegramNotifier:V AndroidRuntime:E "*:S" > liveview.log
 ```
 
 Trigger a run through the real alarm path (uses the currently active profile):
@@ -231,6 +261,7 @@ Do **not** launch the target with `monkey -p <pkg> 1` — monkey injects one pse
 │   │   ├── Runner.java                      # Action execution loop, warmup countdown & auto-sleep
 │   │   ├── TelegramRemoteService.java       # Two-way foreground bot poller, callback queries & command hub
 │   │   ├── TelegramNotifier.java            # Multi-part Telegram client with Markdown & inline keyboards
+│   │   ├── LiveView.java                    # /live grid frames, tap/zoom controls, one-frame-in-flight sender
 │   │   ├── WakeUnlockActivity.java          # Keyguard dismissal & screen turn-on activity
 │   │   ├── AlarmReceiver.java               # Exact alarm scheduler with 15-min watchdog heartbeat
 │   │   ├── DarwinDeviceAdminReceiver.java   # Universal Device Administrator protection
@@ -265,6 +296,13 @@ mirroring impossible from inside the app:
   call per second.
 - Every frame is a fresh multipart upload to Telegram, which applies its own per-chat
   edit rate limits.
+
+Only **one frame is ever in flight**. Telegram cancels an edit that arrives while the
+previous one is still uploading (`canceled by new edit message request`), and the failure
+path then posts a *new* message — which is how a session used to sprout duplicate frames.
+A frame produced during a send now replaces any earlier waiting frame (one slot,
+latest-wins), so the final image is still the settled screen and one chat message is
+edited in place for the whole session.
 
 The honest ceiling is a frame every few seconds. Auto-refresh is floored at **3s**, and a
 session stops itself after **100 frames or 5 minutes** so a forgotten live view cannot

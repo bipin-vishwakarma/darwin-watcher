@@ -1,5 +1,18 @@
 # Work log
 
+## 2026-08-27
+- Root cause of the recurring silent outages: `DeviceUtils.installGlobalCrashShield()` captured the default uncaught-exception handler and never called it. `Looper.loop()` has already unwound by then, so a main-thread crash left the main thread dead and the process alive. The Telegram poller runs on `workerThread` and kept answering `/status` and `/net` while `AlarmReceiver`, every `postDelayed`, the `takeScreenshot` callback and all of `Runner` were dead.
+- `installGlobalCrashShield(Context)` now records the crash to prefs with `commit()`, then chains to the default handler on main-thread crashes (fallback `Process.killProcess` + `System.exit(10)`). Background-thread crashes are recorded and survived. Verified: `am crash` RED gave pid 7761 -> 7761 unchanged; GREEN gave 8782 -> 8909 with alarms intact.
+- `TelegramRemoteService.reportPendingCrash()` sends one Telegram alert on startup, then clears the record. One message per crash. Re-verified live 11:31, pid 15148 -> 17200.
+- Main-thread liveness watchdog in `PollerRunnable`: posts an empty `Runnable` to the main `Handler` every 2 min, kills the process if none runs for 4 min. First implementation never fired (the send branch reset `mainPingSentAt` each interval so the outstanding age never reached the threshold); fixed with an `outstanding` flag and stamping before the post. GREEN: `Main thread unresponsive for 252s`, pid 13797 -> 14980.
+- `LiveView`: one frame in flight at a time. A frame produced during a send replaces any earlier waiting frame (one slot, latest-wins) instead of racing the same `editMessageMedia`. Verified over a real session: 11 frames sent, 11 delivered, 5 coalesced, zero `canceled by new edit message request`, single messageId 318 throughout.
+- Samsung: `com.darwinbox.darwinbox` was standby bucket 10 and not doze-exempt; whitelisted via `dumpsys deviceidle whitelist +`, which moved it to bucket 5 on its own. Both apps now bucket 5. `am set-standby-bucket <pkg> 5` throws `IllegalArgumentException` - bucket 5 is only reachable by whitelisting.
+- Darwin Watcher does not appear in Samsung's Never sleeping apps picker because it is already doze-whitelisted; the picker only lists apps still optimised. The UI steps for it are unnecessary, not failed.
+- Corrected an earlier claim: Tasker and AutoInput are not installed on SM-M055F. `enabled_accessibility_services` holding only `com.darwin.watcher` is correct on this device; nothing was overwritten here.
+- `HANDOFF.md` rewritten as a cold-start handoff with the away runbook for 27 Aug - 1 Sep.
+- Commits on `samsung-oneui-port`: e7eac75, f8a2e16, 74685be, 07c41a0, 262145d, 049717a.
+- Open: Task 7 (close wireless ADB, `adb -s R9ZY40E319D usb`) deliberately not run - it must be the last action and today's 18:16 check-out has not been observed yet. Phone must stay on the charger.
+
 ## 2026-08-26
 - Fixed main-thread crash on fire-and-forget taps: `GestureCallback.onCompleted/onCancelled` called `done.call()` with no null check; live view, `/tap` and `/swipe` all pass `done = null`. Gesture callbacks run on the main thread, so the NPE wedged the main Looper and killed every pending `postDelayed`, including the post-tap screenshot. Confirmed in logcat: `AndroidRuntime NPE ... GestureCallback.onCompleted:1259` + `CrashShield intercepted uncaught exception in thread main`.
 - Fixed live-view ANR: `takeScreenshot()` used `getMainExecutor()`, so crop/scale/grid-draw/JPEG-compress ran on the UI thread every refresh. Rendering moved to a single-thread executor; run-screenshot path still on main (touches WindowManager overlays).
