@@ -63,6 +63,17 @@ public final class LiveView {
     private static volatile int frames = 0;
     private static volatile int consecutiveErrors = 0;
     private static volatile long startedAt = 0L;
+
+    /**
+     * Telegram cancels an edit that arrives while the previous one is still being
+     * processed ("canceled by new edit message request"), and the failure path then
+     * posts a NEW message - which is how a session ends up with duplicates. So only
+     * one frame is ever in flight. A frame produced while a send is active replaces
+     * any earlier waiting one instead of queueing: the newest frame is always the
+     * most settled, so latest-wins is both correct and self-limiting to one slot.
+     */
+    private static volatile boolean sending = false;
+    private static volatile Object[] pending = null;
     private static Runnable ticker = null;
 
     /** Region of the screen currently shown, in device pixels. */
@@ -139,6 +150,8 @@ public final class LiveView {
             messageId = 0;
             frames = 0;
             consecutiveErrors = 0;
+            sending = false;
+            pending = null;
             startedAt = System.currentTimeMillis();
         }
         resetView();
@@ -160,6 +173,8 @@ public final class LiveView {
         cancelTicker();
         releaseScreen();
         messageId = 0;
+        sending = false;
+        pending = null;
         view = null;
         zoomStack.clear();
         if (wasActive && context != null && why != null) {
@@ -440,12 +455,7 @@ public final class LiveView {
                 if (consecutiveErrors >= 3) stop(context, "frame rendering kept failing");
                 return;
             }
-            frames++;
-            Log.i(TAG, "sending frame " + frames + " jpeg=" + jpeg.length + "B messageId=" + messageId);
-            String cap = caption(context);
-            String kb = keyboard();
-            TelegramNotifier.sendOrEditFrame(context, messageId, jpeg, cap, kb,
-                    new ResultHandler(context, jpeg, cap, kb, messageId > 0));
+            dispatch(context, jpeg, caption(context), keyboard());
         }
     }
 
@@ -507,6 +517,29 @@ public final class LiveView {
         return out;
     }
 
+    /** Send now, or park as the one waiting frame if a send is already in flight. */
+    private static synchronized void dispatch(Context context, byte[] jpeg, String cap, String kb) {
+        if (!active) return;
+        if (sending) {
+            pending = new Object[] { context, jpeg, cap, kb };
+            Log.i(TAG, "frame coalesced - a send is still in flight");
+            return;
+        }
+        sending = true;
+        frames++;
+        Log.i(TAG, "sending frame " + frames + " jpeg=" + jpeg.length + "B messageId=" + messageId);
+        TelegramNotifier.sendOrEditFrame(context, messageId, jpeg, cap, kb,
+                new ResultHandler(context, jpeg, cap, kb, messageId > 0));
+    }
+
+    /** One send finished for good; release the slot and flush whatever was waiting. */
+    private static synchronized void finishSend() {
+        sending = false;
+        Object[] p = pending;
+        pending = null;
+        if (p != null) dispatch((Context) p[0], (byte[]) p[1], (String) p[2], (String) p[3]);
+    }
+
     private static final class ResultHandler implements TelegramNotifier.MessageCallback {
         private final Context context;
         private final byte[] jpeg;
@@ -528,12 +561,14 @@ public final class LiveView {
                 Log.i(TAG, "frame delivered, messageId=" + id);
                 consecutiveErrors = 0;
                 if (id > 0) messageId = id;
+                finishSend();
                 return;
             }
 
             // "message is not modified" only means the screen did not change.
             if (error != null && error.indexOf("not modified") >= 0) {
                 consecutiveErrors = 0;
+                finishSend();
                 return;
             }
 
@@ -550,6 +585,7 @@ public final class LiveView {
             }
 
             consecutiveErrors++;
+            finishSend();
             if (consecutiveErrors >= 3) stop(context, "Telegram kept rejecting updates");
         }
     }

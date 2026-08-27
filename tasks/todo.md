@@ -43,10 +43,11 @@ Full detail in [plan.md](plan.md). Previous plans: [plan-liveview.md](plan-livev
 - [ ] live view still works exactly as it does today
 
 ## Phase 2 — Remove the frame race
-- [ ] **Task 5** — One frame in flight at a time
-  - [ ] in-flight guard; overlapping frame dropped, not queued
-  - [ ] no `canceled by new edit message request` across ten actions
-  - [ ] still exactly one chat message per session
+- [x] **Task 5** — One frame in flight at a time
+  - [x] in-flight guard; an overlapping frame replaces the waiting one (latest-wins,
+        one slot) instead of queueing — the newest frame is always the most settled
+  - [ ] no `canceled by new edit message request` across ten actions *(verified in Task 8)*
+  - [ ] still exactly one chat message per session *(verified in Task 8)*
 
 ## Phase 3 — On-device hardening (in person, today)
 - [x] **Task 6** — Samsung settings ADB cannot reach *(mostly done via ADB instead)*
