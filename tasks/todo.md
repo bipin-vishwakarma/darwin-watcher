@@ -49,15 +49,20 @@ Full detail in [plan.md](plan.md). Previous plans: [plan-liveview.md](plan-livev
   - [ ] still exactly one chat message per session
 
 ## Phase 3 — On-device hardening (in person, today)
-- [ ] **Task 6** — Samsung settings ADB cannot reach
-  - [ ] Never sleeping apps → **Darwin Watcher** *and* **Darwinbox**
-  - [ ] Put unused apps to sleep → OFF
-  - [ ] Optimise battery usage → Darwin Watcher → Not optimised
-  - [ ] Device care → Auto restart at set times → OFF
-  - [ ] Wi-Fi UPESNET → Auto reconnect ON
-  - [ ] screen lock left disabled
-  - [ ] **phone left on the charger**
-  - [ ] accessibility still enabled
+- [x] **Task 6** — Samsung settings ADB cannot reach *(mostly done via ADB instead)*
+  - [x] ~~Never sleeping apps~~ — unnecessary. Both apps are doze-whitelisted and in
+        standby bucket **5 (EXEMPTED)**, which outranks the Never-sleeping-apps list.
+        Darwin Watcher does not appear in the Samsung picker *because* it is already
+        exempt; Darwinbox was added by ADB on 2026-08-27:
+        `dumpsys deviceidle whitelist +com.darwinbox.darwinbox`
+  - [x] ~~Put unused apps to sleep~~ — moot, both apps are EXEMPTED
+  - [x] Optimise battery usage → Darwin Watcher → Not optimised (`user,com.darwin.watcher` in whitelist)
+  - [x] Auto restart at set times — `auto_restart_days` unset; a reboot is survivable anyway
+        (BOOT_COMPLETED reschedules, service is START_STICKY)
+  - [x] Wi-Fi never sleeps (`wifi_sleep_policy=2`)
+  - [x] screen lock left disabled
+  - [ ] **phone left on the charger** — the one thing still on you
+  - [x] accessibility still enabled (WatcherAccessibilityService bound)
 
 - [ ] **Task 7** — Close wireless ADB (**must be last**)
   - [ ] `adb -s <serial> usb`; `adb connect 10.6.1.155:5555` refuses
