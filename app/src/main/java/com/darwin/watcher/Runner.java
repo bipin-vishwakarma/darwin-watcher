@@ -26,7 +26,7 @@ public final class Runner {
 
     public static void run(Context context) {
         final Context app = context.getApplicationContext();
-        DeviceUtils.installGlobalCrashShield();
+        DeviceUtils.installGlobalCrashShield(app);
         DeviceUtils.ensureAccessibilityEnabled(app);
 
         WatcherAccessibilityService service = WatcherAccessibilityService.current();

@@ -1,113 +1,85 @@
-# Duplicate schedule runs + Telegram live view
+# Survive 5 days unattended
 
-Device: Samsung SM-M055F (Galaxy M05), One UI 8.0, Android 16 / API 36, 720x1600. Serial `R9ZY40E319D`.
-Target app: `com.darwinbox.darwinbox`.
+Root cause of the repeated breakage: `DeviceUtils.installGlobalCrashShield()` captures
+Android's default crash handler and never calls it. A main-thread exception kills the
+main thread but keeps the process alive — the Telegram poller (own thread) keeps
+replying while alarms, the watchdog, accessibility self-heal, automation runs and every
+live-view capture are silently dead.
 
-**Safety rule: all testing on the `test` profile.** The `Darwin` profile punches real attendance.
-Never tap `[32,432][688,570]` (`id/checkInShortcut`) during testing.
+Full detail in [plan.md](plan.md). Previous plans: [plan-liveview.md](plan-liveview.md),
+[plan-samsung-port.md](plan-samsung-port.md).
 
-Full detail in [plan.md](plan.md). Archived Samsung port plan: [plan-samsung-port.md](plan-samsung-port.md).
-
----
-
-## Phase 0 — Safety net
-
-- [x] **Task 1** — Snapshot device state before any install
-  - [x] `shared_prefs/darwin_watcher.xml` pulled to scratchpad (**not** the repo — holds the live bot token)
-  - [x] Armed alarms + next-fire times recorded for post-restore diff
-  - [x] Both `Darwin` schedules confirmed `enabled:true` beforehand
+**Safety: every test uses the `test` profile, and the profile is asserted before any run.**
 
 ---
 
-## Phase 1 — Stop the double run (highest priority)
+## Phase 0 — Baseline
+- [x] **Task 1** — Snapshot a known-good state
+  - [x] prefs backed up to scratchpad (not the repo — holds the bot token)
+  - [x] working APK pulled off the device as a rollback artefact
+  - [x] armed alarms + next-fire times recorded
+  - [x] rollback commit sha recorded
 
-- [x] **Task 2** — A schedule runs at most once per active day
-  - [x] `Prefs.scheduleLastRunDate` / `setScheduleLastRunDate`, per schedule id, `yyyy-MM-dd` local
-  - [x] `AlarmReceiver` skips the run when already run today; still re-arms + heartbeat + self-heal
-  - [x] `lastRunDate` stamped at dispatch, before `Runner.run()`
-  - [x] `Runner.scheduleItem()` never arms a date already recorded as run (advance before the day-of-week loop at `Runner.java:152-157`)
-  - [x] `isTest` broadcasts and UI Run Now bypass the gate entirely
-  - [x] Saving a schedule from the UI for later today still arms today
-  - [x] Jitter still applied to the next day's occurrence
+## Phase 1 — Stop silent death (root fix)
+- [x] **Task 2** — A crash restarts the app instead of half-killing it
+  - [x] `installGlobalCrashShield(Context)` takes a context
+  - [x] main-thread crash: log, persist crash record with `commit()`, chain to defaultHandler (fallback `killProcess` + `System.exit(10)`)
+  - [x] background-thread crash: log + persist, do **not** kill
+  - [x] record holds thread, exception class, message, timestamp
+  - [x] verified: pid **changes**, alarms survive, service returns on its own
 
-  Root cause: `Runner.java:146-149`. On re-arm, `when` is rebuilt as **today**, a fresh jitter is rolled, and the day only advances `if (triggerTime <= now)`. Fires at 08:05, re-rolls to 08:15, 08:15 > 08:05 → second run today. Second path: `AlarmReceiver.java:30-40` re-arms all schedules on `BOOT_COMPLETED` with no memory of what ran.
+- [x] **Task 3** — Tell the owner it restarted
+  - [x] one Telegram line on next startup naming thread + exception
+  - [x] sent from the restarted process, then record cleared
+  - [x] never repeats on a normal start; send failure never blocks startup
 
-### Checkpoint 1
-- [x] Exactly one run observed from a throwaway `test` schedule
-- [x] Re-armed alarm dated **tomorrow** (convert `origWhen` from `dumpsys alarm`) — this is the assertion that fails on today's build
-- [~] Reboot inside the jitter window produces no run — *not tested directly*; the duplicate-`scheduleId` broadcast exercises the same `scheduleAlreadyRanToday` gate the boot path hits
-- [x] Two back-to-back `isTest` broadcasts both run
+- [ ] **Task 4** — Detect a wedged main thread from the poller thread
+  - [x] poller pings the main Handler every ~5 min and records when it runs
+  - [x] ~3 min past due → persist record + kill so it restarts
+  - [x] startup grace period; no extra main-thread work beyond an empty Runnable
 
----
+### Checkpoint 1 — revert point
+- [ ] main-thread crash → new pid + alarms intact + one Telegram alert
+- [ ] live view still works exactly as it does today
 
-## Phase 2 — Telegram live view
+## Phase 2 — Remove the frame race
+- [ ] **Task 5** — One frame in flight at a time
+  - [ ] in-flight guard; overlapping frame dropped, not queued
+  - [ ] no `canceled by new edit message request` across ten actions
+  - [ ] still exactly one chat message per session
 
-- [x] **Task 3** — `/live` sends a frame that refreshes in place
-  - [x] Extract byte-returning capture from `ScreenshotCallbackHandler.onSuccess` (`:1275-1290`); `captureScreenshotAndSend` reuses it — one implementation, not two
-  - [x] Live frames downscaled/re-compressed; end-of-run screenshot stays full quality
-  - [x] `sendPhoto` parses and returns `result.message_id` (currently discarded)
-  - [x] New `editMessageMedia`, following the `PhotoSender` multipart pattern (`:255-360`)
-  - [x] `/live` posts first frame, stores `message_id`
-  - [x] 🔄 Refresh button edits the same message
-  - [x] Caption shows active profile, foreground package, timestamp
-  - [x] `/live` while live re-uses the session
+## Phase 3 — On-device hardening (in person, today)
+- [ ] **Task 6** — Samsung settings ADB cannot reach
+  - [ ] Never sleeping apps → **Darwin Watcher** *and* **Darwinbox**
+  - [ ] Put unused apps to sleep → OFF
+  - [ ] Optimise battery usage → Darwin Watcher → Not optimised
+  - [ ] Device care → Auto restart at set times → OFF
+  - [ ] Wi-Fi UPESNET → Auto reconnect ON
+  - [ ] screen lock left disabled
+  - [ ] **phone left on the charger**
+  - [ ] accessibility still enabled
 
-- [x] **Task 4** — Control the phone from the live view
-  - [x] Nav row wired to `triggerBack()` / `triggerHome()` / `triggerRecents()` (`:200-213`)
-  - [x] 3x4 tap grid, cell centres computed from `getDisplayMetrics()` — no hardcoded 720x1600
-  - [x] Every control action auto-refreshes the frame
-  - [x] `/tap x y` still available for precision
-  - [x] Keyboard JSON follows the pattern at `TelegramRemoteService.java:728-734`
-  - [x] Callbacks answered via `answerCallbackQuery` (`:86`) so no spinner
+- [ ] **Task 7** — Close wireless ADB (**must be last**)
+  - [ ] `adb -s <serial> usb`; `adb connect 10.6.1.155:5555` refuses
+  - [ ] re-enable procedure recorded in HANDOFF.md
 
-- [x] **Task 5** — Auto-refresh with a hard stop
-  - [x] ▶️ Auto / ⏸ Pause toggle, interval floor **3 s**
-  - [x] Auto-stop after ~5 min or ~100 frames, announced in chat
-  - [x] ⏹ Stop button and `/live stop` both end immediately
-  - [x] Stops itself after repeated edit failures
-  - [~] Never runs concurrently with a `Runner` run — **deliberately not implemented.** Screenshot capture adds no overlay and does not touch gesture dispatch, so there is no interference; `Runner.Step` already hides the watermark before each tap. A live frame during a run just shows the run, which is useful. Adding a `Runner.isRunning()` flag would mean threading state through every terminal path for no behavioural gain.
-  - [x] No thread left behind after stop
+## Phase 4 — Prove it before departure
+- [ ] **Task 8** — Full pre-departure verification
+  - [ ] `/live`: frame, zoom, ✥ TAP, frame returns after tap
+  - [ ] `/status`, `/net`, `/menu` reply
+  - [ ] one `test`-profile run end-to-end, screenshot delivered
+  - [ ] active profile then set to **`Darwin`** so emergency `/run` punches for real
+  - [ ] both schedules armed: 08:10 ±5, 18:15 ±2, Mon–Sat
+  - [ ] crash-restart proven once
+  - [ ] today's 18:15 check-out observed firing
 
-### Checkpoint 2 — *code complete, on-device verification needs the owner to send `/live`*
-- [ ] `/live` usable end-to-end from the phone, no PC
-- [ ] One live message in chat, not a flood
-- [ ] No battery/thread leak after stop
+### Checkpoint 2 — departure gate
+- [ ] Task 8 all green; phone charging, on UPESNET, lock off; wireless ADB closed last
 
----
-
-## Phase 3 — Folded-in Samsung port leftovers
-
-- [x] **Task 6** — Device-aware naming and no MIUI dead-ends
-  - [x] `SM-M055F` → `Samsung Galaxy M05`; Xiaomi mappings (`DeviceUtils.java:100-105`) unchanged
-  - [x] `isSamsung()` / `isXiaomi()` helpers
-  - [x] MIUI keep-alive button (`MainActivity.java:968-971`) shows One UI checklist on Samsung
-  - [x] `openMiuiAutostart()` (`:1186-1189`) opens a real Samsung screen, fallback to app-details — never a dead tap
-  - [x] `Prefs.targetPackage()` (`Prefs.java:66`) resolves an installed calculator at runtime; Darwinbox prefs untouched
-
----
-
-## Phase 4 — Build, install, restore
-
-- [x] **Task 7** — Rebuild and reinstall without losing configuration
-  - [ ] `build.ps1` succeeds, `apksigner verify` passes, `targetSdkVersion` still **33**
-  - [ ] Fresh prefs snapshot immediately before uninstall
-  - [ ] `adb uninstall` → install new APK → restore prefs via `run-as` → `install.ps1`
-  - [ ] Post-restore diff shows only intended differences
-  - [ ] Both `Darwin` schedules re-armed at correct times; profiles + token + chat id present
-  - [ ] `install.ps1` all-PASS
-
-  Unavoidable because `build.ps1`'s generated keystore (`d8d94a0b…`) ≠ installed APK signer (`b1770bfb…`).
-
-### Checkpoint 3
-- [ ] Nothing lost — user re-enters no configuration
-- [ ] Duplicate-run fix verified on the installed build
-- [ ] Both features exercised on-device
-- [ ] Results written to `tasks/test-results.md`
-
----
-
-## Out of scope (decided)
-
-- **Accidental touch protection** — user disabled it in Settings. Samsung pocket mode: `settings system screen_off_pocket=1`, `com.samsung.android.gesture.PocketProximityManager`, sensor `SIP3510_Proximity`. Disabling does not weaken touch; the feature exists to *block* touch.
-- **Vibration to clear an obstruction** — not built. A vibration motor moves the phone ~1mm; it cannot shake an object off the screen. Vibrate-as-alert is available on request.
-- **Real-time video (MediaProjection + HTTP server)** — accessibility capture caps at ~1 fps; real video needs MediaProjection (consent dialog every session) plus a hand-written HTTP server. `scrcpy` covers this whenever a PC is available.
+## Phase 5 — Away runbook
+- [ ] **Task 9** — Write it into HANDOFF.md
+  - [ ] healthy day = two screenshots (~08:10, ~18:15)
+  - [ ] no screenshot → `/status` then `/live`
+  - [ ] missed punch → `/run` (profile is `Darwin`, so it punches for real)
+  - [ ] total silence → Wi-Fi, power or Freecess; needs someone physically present
+  - [ ] a crash now sends a restart alert — informative, not alarming

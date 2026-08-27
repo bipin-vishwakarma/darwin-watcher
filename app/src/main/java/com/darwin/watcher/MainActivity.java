@@ -81,7 +81,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        DeviceUtils.installGlobalCrashShield();
+        DeviceUtils.installGlobalCrashShield(this);
         DeviceUtils.ensureAccessibilityEnabled(this);
         AlarmReceiver.scheduleWatchdogHeartbeat(this);
         ensureTelegramRemoteService();

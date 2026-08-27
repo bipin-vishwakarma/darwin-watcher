@@ -338,6 +338,25 @@ public final class Prefs {
         }
     }
 
+    private static final String CRASH_REPORT = "pending_crash_report";
+
+    /**
+     * Set by the crash handler just before the process dies, read once by the restarted
+     * process so the owner is told. Written with commit() - a dying process may not
+     * survive long enough for an async apply() to reach disk.
+     */
+    public static String pendingCrashReport(Context context) {
+        return prefs(context).getString(CRASH_REPORT, "");
+    }
+
+    public static void setPendingCrashReport(Context context, String value) {
+        prefs(context).edit().putString(CRASH_REPORT, value == null ? "" : value).commit();
+    }
+
+    public static void clearPendingCrashReport(Context context) {
+        prefs(context).edit().remove(CRASH_REPORT).apply();
+    }
+
     private static final String SCHEDULE_LAST_RUN = "schedule_last_run_";
 
     /** Local calendar date as yyyy-MM-dd. Used to enforce one run per schedule per day. */

@@ -14,7 +14,7 @@ public class AlarmReceiver extends BroadcastReceiver {
     @Override
     public void onReceive(Context context, Intent intent) {
         Context app = context.getApplicationContext();
-        DeviceUtils.installGlobalCrashShield();
+        DeviceUtils.installGlobalCrashShield(app);
 
         // 1. Immediately self-heal and lock Accessibility Service in Android Secure Settings
         DeviceUtils.ensureAccessibilityEnabled(app);

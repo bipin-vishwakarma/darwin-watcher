@@ -75,7 +75,7 @@ public final class TelegramRemoteService extends Service {
     public void onCreate() {
         super.onCreate();
         running = true;
-        DeviceUtils.installGlobalCrashShield();
+        DeviceUtils.installGlobalCrashShield(this);
         DeviceUtils.ensureAccessibilityEnabled(this);
         Log.i(TAG, "TelegramRemoteService started (24/7 Keep-Alive & Command Hub active).");
 
@@ -120,6 +120,7 @@ public final class TelegramRemoteService extends Service {
             } catch (Exception ignored) { }
         }
 
+        reportPendingCrash();
         startPoller();
     }
 
@@ -188,6 +189,36 @@ public final class TelegramRemoteService extends Service {
     @Override
     public IBinder onBind(Intent intent) {
         return null;
+    }
+
+
+    /**
+     * Reports a crash from the RESTARTED process, not the dying one - delivery must not
+     * depend on a crashing thread outliving its own exception. Sent once, then cleared.
+     */
+    private void reportPendingCrash() {
+        try {
+            String rec = Prefs.pendingCrashReport(this);
+            if (rec == null || rec.length() == 0) return;
+            Prefs.clearPendingCrashReport(this);
+
+            String[] p = rec.split(java.util.regex.Pattern.quote("|"), -1);
+            String thread = p.length > 0 ? p[0] : "?";
+            String type   = p.length > 1 ? p[1] : "?";
+            String msg    = p.length > 2 ? p[2] : "";
+            String when   = p.length > 3 ? p[3] : "";
+
+            StringBuilder sb = new StringBuilder();
+            sb.append("⚠️ Darwin Watcher restarted after a crash\n\n");
+            sb.append("🧵 Thread   ").append(thread).append("\n");
+            sb.append("💥 Error    ").append(type).append("\n");
+            if (msg.length() > 0) sb.append("📝 Detail   ").append(msg).append("\n");
+            if (when.length() > 0) sb.append("🕒 When     ").append(when).append("\n");
+            sb.append("\nSchedules and the listener are back up. No action needed.");
+            TelegramNotifier.sendText(this, sb.toString(), null);
+        } catch (Throwable t) {
+            Log.w(TAG, "could not report pending crash", t);
+        }
     }
 
     private void startPoller() {

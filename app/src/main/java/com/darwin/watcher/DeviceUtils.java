@@ -18,17 +18,69 @@ public final class DeviceUtils {
 
     private DeviceUtils() { }
 
-    public static void installGlobalCrashShield() {
+    /**
+     * Records uncaught exceptions and, on the main thread, lets the process DIE.
+     *
+     * The previous version captured the default handler and never called it. That kept
+     * the process alive after a fatal main-thread exception - but Looper.loop() has
+     * already unwound by then, so the main thread is dead for good. Everything that runs
+     * on it stops silently: AlarmReceiver (scheduled runs, the 15-minute watchdog,
+     * accessibility self-heal), every Handler.postDelayed, the takeScreenshot callback
+     * and all of Runner. Meanwhile the Telegram poller has its own thread and keeps
+     * answering /status and /net, so the app looks perfectly healthy while attendance
+     * quietly stops being punched. Verified with `adb shell am crash`: FATAL EXCEPTION
+     * on main, and the pid was unchanged afterwards.
+     *
+     * Dying is the recoverable option. The service is START_STICKY and alarms live in
+     * AlarmManager, not in the process, so Android brings us straight back.
+     */
+    public static void installGlobalCrashShield(Context context) {
         if (crashShieldInstalled) return;
         crashShieldInstalled = true;
-        final Thread.UncaughtExceptionHandler defaultHandler = Thread.getDefaultUncaughtExceptionHandler();
-        Thread.setDefaultUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
-            @Override
-            public void uncaughtException(Thread t, Throwable e) {
-                Log.e(TAG, "⚡ CrashShield intercepted uncaught exception in thread " + t.getName(), e);
-                // Do not let the app process terminate silently - keep services alive
-            }
-        });
+        Context app = context != null ? context.getApplicationContext() : null;
+        Thread.setDefaultUncaughtExceptionHandler(
+                new CrashHandler(app, Thread.getDefaultUncaughtExceptionHandler()));
+    }
+
+    private static final class CrashHandler implements Thread.UncaughtExceptionHandler {
+        private final Context app;
+        private final Thread.UncaughtExceptionHandler defaultHandler;
+
+        CrashHandler(Context app, Thread.UncaughtExceptionHandler defaultHandler) {
+            this.app = app;
+            this.defaultHandler = defaultHandler;
+        }
+
+        @Override
+        public void uncaughtException(Thread t, Throwable e) {
+            boolean isMain = t == android.os.Looper.getMainLooper().getThread();
+            Log.e(TAG, "Uncaught exception in thread " + t.getName() + " (main=" + isMain + ")", e);
+
+            // Persisted with commit(): a dying process may not outlive an async apply().
+            try {
+                if (app != null) {
+                    String msg = e.getMessage() == null ? "" : e.getMessage();
+                    if (msg.length() > 160) msg = msg.substring(0, 160);
+                    Prefs.setPendingCrashReport(app,
+                            t.getName() + "|" + e.getClass().getSimpleName() + "|" + msg
+                            + "|" + new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss",
+                                    java.util.Locale.US).format(new java.util.Date()));
+                }
+            } catch (Throwable ignored) { }
+
+            // A background thread dying is survivable - the poller is restarted by the
+            // 15-minute watchdog, and killing the process over it would be worse.
+            if (!isMain) return;
+
+            try {
+                if (defaultHandler != null) {
+                    defaultHandler.uncaughtException(t, e);
+                    return;
+                }
+            } catch (Throwable ignored) { }
+            android.os.Process.killProcess(android.os.Process.myPid());
+            System.exit(10);
+        }
     }
 
     public static void wakeUpScreen(Context context) {
